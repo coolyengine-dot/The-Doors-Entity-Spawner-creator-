@@ -1,2 +1,2 @@
 # The-Doors-Entity-Spawner-creator-
-You can now create Entiries
+You can now create Entities and spawn them
