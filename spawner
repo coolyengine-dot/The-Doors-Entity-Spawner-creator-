@@ -28,6 +28,15 @@ local RunService = game:GetService('RunService')
 local player = Players.LocalPlayer
 local guiParent = player:WaitForChild('PlayerGui')
 local active = {}
+local trackedEntityModels = setmetatable({}, {__mode='k'})
+local function trackEntityModel(model)
+ if typeof(model)=='Instance' and (model:IsA('Model') or model:IsA('BasePart')) then
+  trackedEntityModels[model]=true
+  pcall(function() model:SetAttribute('DOORSEntitySpawnerOwned',true) end)
+ end
+ return model
+end
+_G.DOORS_TrackEntityModel=trackEntityModel
 local selected = 'Rush'
 local speedMultiplier = 1
 local damageEnabled = false
@@ -38,8 +47,7 @@ local floorSpawnDistance = 45
 local entries = {
  {'Rush',Color3.fromRGB(22,22,22),90,'rush'},
  {'Ambush',Color3.fromRGB(32,190,112),115,'rush'},
- {'A-60',Color3.fromRGB(195,26,30),110,'rush'},
- {'Matcher',Color3.fromRGB(145,70,190),85,'rush'}
+ {'A-60',Color3.fromRGB(195,26,30),110,'rush'}
 }
 local registry = {}
 for _,e in ipairs(entries) do registry[e[1]]={color=e[2],speed=e[3],mode=e[4]} end
@@ -82,6 +90,23 @@ end
 -- A-60 uses the supplied model and configuration through the external entity spawner.
 -- Requires an environment that permits loadstring and HttpGet; Roblox Studio does not
 -- normally permit this client-side. The URL is third-party code; review before use.
+-- Entity Editor live overrides. Only active while spawning the entity selected in the editor.
+local function editorSetting(key, default)
+ local profile=_G.DOORS_EDITOR_ACTIVE_PROFILE
+ local activeName=_G.DOORS_EDITOR_ACTIVE_NAME
+ if type(profile)=="table" and activeName==_G.DOORS_EDITOR_ACTIVE_NAME and profile[key]~=nil then
+  return profile[key]
+ end
+ return default
+end
+local function editorCycles(defaultMin,defaultMax,defaultWait)
+ local count=math.max(0,math.floor(tonumber(editorSetting("Rebounds",defaultMin)) or 0))
+ if count<=0 then count=1 end -- Legacy spawner requires at least one traversal.
+ return {Min=count,Max=count,WaitTime=tonumber(editorSetting("ReboundDelay",defaultWait)) or defaultWait}
+end
+local function editorFlicker(defaultEnabled,defaultDuration)
+ return {editorSetting("Flicker",defaultEnabled),editorSetting("FlickerDuration",defaultDuration)}
+end
 local a60Spawner
 local function spawnRealA60()
  if not a60Spawner then
@@ -97,11 +122,11 @@ local function spawnRealA60()
  local ok,err=pcall(function()
   local entity=a60Spawner.createEntity({
    CustomName='A-60', Model='rbxassetid://14169212325',
-   Speed=1000, DelayTime=3, HeightOffset=0, CanKill=false,
-   KillRange=20, BackwardsMovement=false, BreakLights=true,
-   FlickerLights={true,1},
-   Cycles={Min=2,Max=4,WaitTime=0},
-   CamShake={false,{30,30,0.1,1},50},
+   Speed=editorSetting("Speed",1000), DelayTime=editorSetting("Delay",3), HeightOffset=editorSetting("HeightOffset",0), CanKill=editorSetting("Damage",false),
+   KillRange=editorSetting("DamageRange",20), BackwardsMovement=editorSetting("Reversed",false), BreakLights=editorSetting("Break",true),
+   FlickerLights=editorFlicker(true,1),
+   Cycles=editorCycles(2,4,0),
+   CamShake={editorSetting("CamShake",false),{30,30,0.1,1},editorSetting("ShakeRange",50)},
    Jumpscare={true,{
     Image1='rbxassetid://13593469639',
     Image2='rbxassetid://13589812633',Shake=true,
@@ -129,9 +154,9 @@ local a60Edits = _G.DOORS_A60_EditorOverrides
 local function a60VariantSettings(index)
  local edit=a60Edits[index] or {}
  return {
-  Speed=math.clamp(tonumber(edit.Speed) or A60_VARIANT_SPEEDS[index],1,10000),
-  Rebounds=math.clamp(math.floor(tonumber(edit.Rebounds) or (1+((index-1)%5))),0,100),
-  Reversed=edit.Reversed == nil and (index%10==0) or edit.Reversed
+  Speed=math.clamp(tonumber((_G.DOORS_EDITOR_ACTIVE_NAME=='A-60 Variant '..string.format('%02d',index) and _G.DOORS_EDITOR_ACTIVE_PROFILE and _G.DOORS_EDITOR_ACTIVE_PROFILE.Speed) or edit.Speed) or A60_VARIANT_SPEEDS[index],1,10000),
+  Rebounds=math.clamp(math.floor(tonumber((_G.DOORS_EDITOR_ACTIVE_NAME=='A-60 Variant '..string.format('%02d',index) and _G.DOORS_EDITOR_ACTIVE_PROFILE and _G.DOORS_EDITOR_ACTIVE_PROFILE.Rebounds) or edit.Rebounds) or (1+((index-1)%5))),0,100),
+  Reversed=(_G.DOORS_EDITOR_ACTIVE_NAME=='A-60 Variant '..string.format('%02d',index) and _G.DOORS_EDITOR_ACTIVE_PROFILE and _G.DOORS_EDITOR_ACTIVE_PROFILE.Reversed) or (edit.Reversed == nil and (index%10==0) or edit.Reversed)
  }
 end
 local function spawnA60Variant(index)
@@ -149,15 +174,15 @@ local function spawnA60Variant(index)
  local settings=a60VariantSettings(index)
  local speed=settings.Speed
  local rebounds=settings.Rebounds
- local lethal=(index%5==0)
+ local lethal=editorSetting('Damage',(index%5==0))
  local delay=math.max(0.5,3-index*0.04)
  local ok,err=pcall(function()
   local entity=a60Spawner.createEntity({
    CustomName='A-60 Variant '..index, Model=ORIGINAL_A60_MODEL,
-   Speed=speed,DelayTime=delay,HeightOffset=0,CanKill=lethal,
-   KillRange=20,BackwardsMovement=settings.Reversed,BreakLights=(index%2==0),
-   FlickerLights={true,1},
-   Cycles={Min=math.max(1,rebounds),Max=math.max(1,rebounds),WaitTime=1},
+   Speed=speed,DelayTime=editorSetting('Delay',delay),HeightOffset=editorSetting('HeightOffset',0),CanKill=lethal,
+   KillRange=editorSetting('DamageRange',20),BackwardsMovement=editorSetting('Reversed',settings.Reversed),BreakLights=editorSetting('Break',(index%2==0)),
+   FlickerLights=editorFlicker(true,1),
+   Cycles=editorCycles(math.max(1,rebounds),math.max(1,rebounds),1),
    CamShake={false,{30,30,0.1,1},50},Jumpscare={false,{}},
    CustomDialog={'You died to A-60 Variant '..index..'.','Watch its speed and rebounds.'}
   })
@@ -184,11 +209,11 @@ local function spawnPissedA60()
   local entity=pissedCreator.createEntity({
    CustomName='A-60 But Absolutely Pissed',
    Model='rbxassetid://139692532333823',
-   Speed=220, DelayTime=5, HeightOffset=-0.5,
-   CanKill=false, KillRange=1, BreakLights=true,
-   BackwardsMovement=false, FlickerLights={true,1.5},
-   Cycles={Min=1,Max=5,WaitTime=1},
-   CamShake={true,{40,50,0.1,1},90},
+   Speed=editorSetting("Speed",220), DelayTime=editorSetting("Delay",5), HeightOffset=editorSetting("HeightOffset",-0.5),
+   CanKill=editorSetting("Damage",false), KillRange=editorSetting("DamageRange",1), BreakLights=editorSetting("Break",true),
+   BackwardsMovement=editorSetting("Reversed",false), FlickerLights=editorFlicker(true,1.5),
+   Cycles=editorCycles(1,5,1),
+   CamShake={editorSetting("CamShake",true),{40,50,0.1,1},editorSetting("ShakeRange",90)},
    Jumpscare={true,{
     Image1='rbxassetid://10483855823',
     Image2='rbxassetid://10483999903',Shake=true,
@@ -222,11 +247,11 @@ local function spawnRealRush()
   local entity = rushCreator.createEntity({
    CustomName='Rush',
    Model='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/Rush.txt?raw=true',
-   Speed=100, DelayTime=4, HeightOffset=0,
-   CanKill=false, KillRange=40, BreakLights=true,
-   BackwardsMovement=false, FlickerLights={true,1},
-   Cycles={Min=1,Max=1,WaitTime=1},
-   CamShake={true,{1.5,20,0.1,1},90},
+   Speed=editorSetting("Speed",100), DelayTime=editorSetting("Delay",4), HeightOffset=editorSetting("HeightOffset",0),
+   CanKill=editorSetting("Damage",false), KillRange=editorSetting("DamageRange",40), BreakLights=editorSetting("Break",true),
+   BackwardsMovement=editorSetting("Reversed",false), FlickerLights=editorFlicker(true,1),
+   Cycles=editorCycles(1,1,1),
+   CamShake={editorSetting("CamShake",true),{1.5,20,0.1,1},editorSetting("ShakeRange",90)},
    Jumpscare={true,{
     Image1='rbxassetid://10483855823',
     Image2='rbxassetid://10483999903', Shake=true,
@@ -255,10 +280,10 @@ local function spawnMadRush()
   local entity=creator.createEntity({
    CustomName='Mad Rush',
    Model='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/Rush.txt?raw=true',
-   Speed=400,DelayTime=2,HeightOffset=0,CanKill=true,KillRange=45,
-   BackwardsMovement=false,BreakLights=true,FlickerLights={true,2},
-   Cycles={Min=1,Max=1,WaitTime=1},
-   CamShake={true,{10,50,0.1,1},100},
+   Speed=editorSetting("Speed",400),DelayTime=editorSetting("Delay",2),HeightOffset=editorSetting("HeightOffset",0),CanKill=editorSetting("Damage",true),KillRange=editorSetting("DamageRange",45),
+   BackwardsMovement=editorSetting("Reversed",false),BreakLights=editorSetting("Break",true),FlickerLights=editorFlicker(true,2),
+   Cycles=editorCycles(1,1,1),
+   CamShake={editorSetting("CamShake",true),{10,50,0.1,1},editorSetting("ShakeRange",100)},
    Jumpscare={false,{}},
    CustomDialog={'You died to Mad Rush.','It is much faster than Rush.','Hide as soon as the lights flicker.'}
   })
@@ -298,11 +323,11 @@ local function spawnCustomAmbush(isMad)
   local entity = ambushCreator.createEntity({
    CustomName=name,
    Model='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/AmbushMoving.txt?raw=true',
-   Speed=isMad and 400 or 250, DelayTime=4, HeightOffset=1,
-   CanKill=isMad, KillRange=60, BreakLights=true,
-   BackwardsMovement=false, FlickerLights={true,1.5},
-   Cycles={Min=isMad and 1 or 2,Max=isMad and 1 or 5,WaitTime=1},
-   CamShake={true,{5,15,0.1,1},90},
+   Speed=editorSetting("Speed",isMad and 400 or 250), DelayTime=editorSetting("Delay",4), HeightOffset=editorSetting("HeightOffset",1),
+   CanKill=editorSetting("Damage",isMad), KillRange=editorSetting("DamageRange",60), BreakLights=editorSetting("Break",true),
+   BackwardsMovement=editorSetting("Reversed",false), FlickerLights=editorFlicker(true,1.5),
+   Cycles=editorCycles(isMad and 1 or 2,isMad and 1 or 5,1),
+   CamShake={editorSetting("CamShake",true),{5,15,0.1,1},editorSetting("ShakeRange",90)},
    Jumpscare={false,{
     Image1='rbxassetid://10483855823',
     Image2='rbxassetid://10483999903', Shake=true,
@@ -353,10 +378,10 @@ local function spawnRealDepth()
   local entity=depthSpawner.createEntity({
    CustomName='Depth',
    Model='https://github.com/plamen6789/CustomDoorsMonsters/blob/e42ceeb54cecce1f89b06a9338a53ac34647055e/Depth.rbxm?raw=true',
-   Speed=400,DelayTime=1,HeightOffset=0,CanKill=false,KillRange=40,
-   BackwardsMovement=true,BreakLights=true,FlickerLights={true,1},
-   Cycles={Min=1,Max=5,WaitTime=1},
-   CamShake={true,{10,50,0.1,1},100},
+   Speed=editorSetting("Speed",400),DelayTime=editorSetting("Delay",1),HeightOffset=editorSetting("HeightOffset",0),CanKill=editorSetting("Damage",false),KillRange=editorSetting("DamageRange",40),
+   BackwardsMovement=editorSetting("Reversed",true),BreakLights=editorSetting("Break",true),FlickerLights=editorFlicker(true,1),
+   Cycles=editorCycles(1,5,1),
+   CamShake={editorSetting("CamShake",true),{10,50,0.1,1},editorSetting("ShakeRange",100)},
    Jumpscare={true,{
     Image1='rbxassetid://14629487251',Image2='rbxassetid://14629487251',Shake=false,
     Sound1={10483790459,{Volume=0.5}},Sound2={10483837590,{Volume=0.5}},
@@ -415,10 +440,10 @@ local function spawnMadDepth()
   local entity=source.createEntity({
    CustomName='Mad Depth',
    Model='https://github.com/plamen6789/CustomDoorsMonsters/blob/e42ceeb54cecce1f89b06a9338a53ac34647055e/Depth.rbxm?raw=true',
-   Speed=800,DelayTime=1,HeightOffset=0,CanKill=false,KillRange=40,
-   BackwardsMovement=false,BreakLights=true,FlickerLights={true,1},
-   Cycles={Min=1,Max=5,WaitTime=1},
-   CamShake={true,{10,50,0.1,1},100},
+   Speed=editorSetting("Speed",800),DelayTime=editorSetting("Delay",1),HeightOffset=editorSetting("HeightOffset",0),CanKill=editorSetting("Damage",false),KillRange=editorSetting("DamageRange",40),
+   BackwardsMovement=editorSetting("Reversed",false),BreakLights=editorSetting("Break",true),FlickerLights=editorFlicker(true,1),
+   Cycles=editorCycles(1,5,1),
+   CamShake={editorSetting("CamShake",true),{10,50,0.1,1},editorSetting("ShakeRange",100)},
    Jumpscare={false,{}},
    CustomDialog={'Mad Depth caught up to you.','It is much faster than regular Depth.','Hide quickly!'}
   })
@@ -450,10 +475,10 @@ local function spawnChargedTerror()
   local source=loadstring(game:HttpGet(url))()
   local entity=source.createEntity({
    CustomName='Charged Terror',Model='rbxassetid://11443827764',
-   Speed=2000,DelayTime=2,HeightOffset=0,CanKill=true,KillRange=30,
-   BackwardsMovement=false,BreakLights=true,FlickerLights={true,3},
-   Cycles={Min=1,Max=5,WaitTime=0},
-   CamShake={true,{1.5,50,0.1,1},100},
+   Speed=editorSetting("Speed",2000),DelayTime=editorSetting("Delay",2),HeightOffset=editorSetting("HeightOffset",0),CanKill=editorSetting("Damage",true),KillRange=editorSetting("DamageRange",30),
+   BackwardsMovement=editorSetting("Reversed",false),BreakLights=editorSetting("Break",true),FlickerLights=editorFlicker(true,3),
+   Cycles=editorCycles(1,5,0),
+   CamShake={editorSetting("CamShake",true),{1.5,50,0.1,1},editorSetting("ShakeRange",100)},
    Jumpscare={false,{
     Image1='rbxassetid://14629487251',Image2='rbxassetid://12211589775',
     Shake=true,Sound1={10483790459,{Volume=0.5}},
@@ -481,10 +506,10 @@ local function spawnA60Troll()
   local e=C.createEntity({
    CustomName='A-60 Troll',
    Model='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/A60Troll.txt?raw=true',
-   Speed=200,DelayTime=1.5,HeightOffset=-1,CanKill=true,KillRange=40,
-   BreakLights=true,BackwardsMovement=false,FlickerLights={false,1},
-   Cycles={Min=1,Max=1,WaitTime=1},
-   CamShake={true,{1,5,0.1,1},90},
+   Speed=editorSetting("Speed",200),DelayTime=editorSetting("Delay",1.5),HeightOffset=editorSetting("HeightOffset",-1),CanKill=editorSetting("Damage",true),KillRange=editorSetting("DamageRange",40),
+   BreakLights=editorSetting("Break",true),BackwardsMovement=editorSetting("Reversed",false),FlickerLights=editorFlicker(false,1),
+   Cycles=editorCycles(1,1,1),
+   CamShake={editorSetting("CamShake",true),{1,5,0.1,1},editorSetting("ShakeRange",90)},
    Jumpscare={false,{Image1='rbxassetid://0',Image2='rbxassetid://0',Shake=false,
     Sound1={10483790459,{Volume=0}},Sound2={10483837590,{Volume=0}},
     Flashing={false,Color3.fromRGB(0,0,0)},Tease={false,Min=0,Max=0}}},
@@ -521,69 +546,104 @@ end
 addCustom('A-60 Troll',Color3.fromRGB(160,20,20),200,'rush')
 
 
--- RIPPER (STANDARD / CLASSIC): uses the user's supplied Old Vynixu Creator setup.
--- This is NOT a Hardcore variant. The supplied RipperClassic.txt model is used.
+-- RIPPER: adapted from the supplied script. Requires access to asset 11580358412.
+-- Avoids modifying badges, forcing server doors, or requiring exploit file APIs.
 local function spawnRipper()
  local ok,err=pcall(function()
-  local loadCreator,loadErr=loadstring(game:HttpGet('https://pastebin.com/raw/0fSnvfGt'))
-  if type(loadCreator)~='function' then error('Could not load the entity Creator: '..tostring(loadErr)) end
-  local Creator=loadCreator()
-  if type(Creator)~='table' or type(Creator.createEntity)~='function' or type(Creator.runEntity)~='function' then
-   error('Creator did not provide createEntity/runEntity')
+  local loaded=game:GetObjects('rbxassetid://11580358412')[1]
+  assert(loaded, 'Ripper model could not be loaded')
+  loaded.Name='Ripper'; trackEntityModel(loaded); loaded.Parent=folder
+  local ripper=loaded:FindFirstChild('Ripe',true)
+  assert(ripper and ripper:IsA('BasePart'), 'Ripper asset is missing Ripe part')
+  ripper.Anchored=true; ripper.CanCollide=false
+  local char=player.Character; local root=char and char:FindFirstChild('HumanoidRootPart')
+  assert(root, 'Character not ready')
+  ripper.CFrame=getSpawnCFrame(root) + Vector3.new(0,5,0)
+  local sound=ripper:FindFirstChild('Ambush')
+  if sound and sound:IsA('Sound') then
+   sound.SoundId='rbxassetid://6963538865'; sound.Volume=5; sound.PlaybackSpeed=.37; sound:Play()
   end
-  local entityTable=Creator.createEntity({
-   CustomName='Ripper',
-   Model='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/RipperClassic.txt?raw=true',
-   Speed=250,
-   DelayTime=0.5,
-   HeightOffset=1,
-   CanKill=true,
-   KillRange=10,
-   BackwardsMovement=false,
-   BreakLights=true,
-   FlickerLights={true,3},
-   Cycles={Min=2,Max=6,WaitTime=0},
-   CamShake={true,{5,50,0.1,1},100},
-   Jumpscare={true,{
-    Image1='rbxassetid://11823865636',
-    Image2='rbxassetid://11823865636',
-    Shake=true,
-    Sound1={0,{Volume=0.5}},
-    Sound2={137315230783658,{Volume=0.5}},
-    Flashing={true,Color3.fromRGB(0,0,0)},
-    Tease={true,Min=1,Max=4},
-   }},
-   CustomDialog={'Ripper??'},
-  })
-  if type(entityTable)~='table' then error('Creator.createEntity did not return an entity table') end
-  if type(entityTable.Debug)=='table' then
-   entityTable.Debug.OnEntitySpawned=function() print('[Ripper] Entity spawned:',entityTable) end
-   entityTable.Debug.OnEntityDespawned=function() print('[Ripper] Entity despawned:',entityTable) end
-   entityTable.Debug.OnEntityStartMoving=function() print('[Ripper] Started moving:',entityTable) end
-   entityTable.Debug.OnEntityFinishedRebound=function() print('[Ripper] Finished rebound:',entityTable) end
-   entityTable.Debug.OnEntityEnteredRoom=function(room) print('[Ripper] Entered room:',room) end
-   entityTable.Debug.OnLookAtEntity=function() print('[Ripper] Player looked at Ripper') end
-   entityTable.Debug.OnDeath=function() warn('[Ripper] Player died.') end
-  else
-   warn('[Ripper] Debug callback table unavailable; continuing without callbacks.')
+  local rooms=workspace:FindFirstChild('CurrentRooms')
+  if rooms then
+   for _,v in ipairs(rooms:GetDescendants()) do
+    if v:IsA('Light') then
+     TweenService:Create(v,TweenInfo.new(3),{Color=Color3.fromRGB(255,0,34)}):Play()
+    end
+   end
   end
-  Creator.runEntity(entityTable)
-  print('[Ripper] Standard Ripper run requested (250 speed, 2-6 cycles).')
+  local done=false
+  task.spawn(function()
+   local function moveTo(pos)
+    if done or not ripper.Parent then return end
+    local dist=(ripper.Position-pos).Magnitude
+    local tween=TweenService:Create(ripper,TweenInfo.new(math.max(.03,dist/100),Enum.EasingStyle.Linear),{CFrame=CFrame.new(pos)})
+    tween:Play(); tween.Completed:Wait()
+   end
+   if rooms then
+    local numbered={}
+    for _,room in ipairs(rooms:GetChildren()) do
+     local n=tonumber(room.Name)
+     if n then table.insert(numbered,{n=n,room=room}) end
+    end
+    table.sort(numbered,function(a,b) return a.n<b.n end)
+    for _,entry in ipairs(numbered) do
+     if done then break end
+     local nodes=entry.room:FindFirstChild('Nodes')
+     if nodes then
+      local sorted=nodes:GetChildren()
+      table.sort(sorted,function(a,b) return (tonumber(a.Name) or 0)<(tonumber(b.Name) or 0) end)
+      for _,node in ipairs(sorted) do
+       if done then break end
+       if node:IsA('BasePart') then moveTo(node.Position+Vector3.new(0,5,0)) end
+      end
+     end
+    end
+   else
+    moveTo(root.Position + root.CFrame.LookVector*8+Vector3.new(0,5,0))
+   end
+   done=true
+   if loaded.Parent then loaded:Destroy() end
+  end)
+  task.spawn(function()
+   while not done and loaded.Parent and ripper.Parent do
+    task.wait(.1)
+    local character=player.Character
+    local hrp=character and character:FindFirstChild('HumanoidRootPart')
+    local hum=character and character:FindFirstChildWhichIsA('Humanoid')
+    if hrp and hum and hum.Health>0 and not character:GetAttribute('Hiding') then
+     local delta=hrp.Position-ripper.Position
+     if delta.Magnitude<=50 then
+      local rayParams=RaycastParams.new()
+      rayParams.FilterType=Enum.RaycastFilterType.Exclude
+      rayParams.FilterDescendantsInstances={loaded}
+      local hit=workspace:Raycast(ripper.Position,delta,rayParams)
+      if hit and hit.Instance:IsDescendantOf(character) then
+       done=true
+       -- Local death effect; in multiplayer the server may not accept local damage.
+       if editorSetting('Damage',true) then hum:TakeDamage(tonumber(editorSetting('DamageAmount',100)) or 100) end
+       warn('Ripper caught you! Hide when the lights turn red.')
+       if loaded.Parent then loaded:Destroy() end
+       break
+      end
+     end
+    end
+   end
+  end)
  end)
- if not ok then warn('[Ripper] Standard spawn failed: '..tostring(err)) end
+ if not ok then warn('Ripper spawn failed: '..tostring(err)) end
  return ok
 end
-addCustom('Ripper',Color3.fromRGB(255,0,34),250,'rush')
+addCustom('Ripper',Color3.fromRGB(255,0,34),100,'rush')
 
 -- Cease: stand completely still when it appears (including while hiding).
 local function spawnCease()
  local ok,err=pcall(function()
   local Creator=loadstring(game:HttpGet('https://pastebin.com/raw/0fSnvfGt'))()
   local entity=Creator.createEntity({
-   CustomName='Cease',Model='rbxassetid://12262854624',Speed=150,DelayTime=1,
-   HeightOffset=0.5,CanKill=false,KillRange=40,BreakLights=false,
-   BackwardsMovement=false,FlickerLights={false,2},Cycles={Min=1,Max=1,WaitTime=1},
-   CamShake={true,{1.5,40,0.1,1},90},
+   CustomName='Cease',Model='rbxassetid://12262854624',Speed=editorSetting("Speed",150),DelayTime=editorSetting("Delay",1),
+   HeightOffset=editorSetting("HeightOffset",0.5),CanKill=editorSetting("Damage",false),KillRange=editorSetting("DamageRange",40),BreakLights=editorSetting("Break",false),
+   BackwardsMovement=editorSetting("Reversed",false),FlickerLights=editorFlicker(false,2),Cycles=editorCycles(1,1,1),
+   CamShake={editorSetting("CamShake",true),{1.5,40,0.1,1},editorSetting("ShakeRange",90)},
    Jumpscare={false,{Image1='rbxassetid://0',Image2='rbxassetid://0',Shake=false,
     Sound1={103879029437685,{Volume=0.9}},Sound2={10483837590,{Volume=0.9}},
     Flashing={true,Color3.fromRGB(255,0,0)},Tease={false,Min=2,Max=4}}},
@@ -617,7 +677,7 @@ local function spawnCease()
     connection:Disconnect()
     if moved and humanoid.Parent and humanoid.Health>0 then
      warn('Cease detected movement!')
-     humanoid.Health=0
+     if editorSetting('Damage',false) then humanoid.Health=0 end
     end
    end)
   end
@@ -655,7 +715,7 @@ local function spawnFrostbite()
   local startRoom=latestRoom.Value
   local room=rooms:FindFirstChild(tostring(startRoom))
   local nodes=room and room:FindFirstChild('Nodes')
-  model.Parent=workspace
+  trackEntityModel(model); model.Parent=workspace
   if nodes then
    local points={}
    for _,node in ipairs(nodes:GetChildren()) do if node:IsA('BasePart') then table.insert(points,node) end end
@@ -693,7 +753,7 @@ local function spawnFrostbite()
        end
        if hasHeat then break end
       end
-      if not hasHeat then humanoid:TakeDamage(5) end
+      if not hasHeat and editorSetting('Damage',true) then humanoid:TakeDamage(tonumber(editorSetting('DamageAmount',5)) or 5) end
      end
      task.wait(1)
     end
@@ -722,10 +782,10 @@ local function spawnRealGreed()
   local entityTable = Spawner.createEntity({
    CustomName='Greed',
    Model='https://github.com/plamen6789/CustomDoorsMonsters/blob/e42ceeb54cecce1f89b06a9338a53ac34647055e/Greed.rbxm?raw=true',
-   Speed=400, DelayTime=2, HeightOffset=0, CanKill=true, KillRange=40,
-   BackwardsMovement=false, BreakLights=true,
-   FlickerLights={true,1}, Cycles={Min=1,Max=1,WaitTime=1},
-   CamShake={true,{10,50,0.1,1},100},
+   Speed=editorSetting("Speed",400), DelayTime=editorSetting("Delay",2), HeightOffset=editorSetting("HeightOffset",0), CanKill=editorSetting("Damage",true), KillRange=editorSetting("DamageRange",40),
+   BackwardsMovement=editorSetting("Reversed",false), BreakLights=editorSetting("Break",true),
+   FlickerLights=editorFlicker(true,1), Cycles=editorCycles(1,1,1),
+   CamShake={editorSetting("CamShake",true),{10,50,0.1,1},editorSetting("ShakeRange",100)},
    Jumpscare={false,{
     Image1='rbxassetid://14629487251', Image2='rbxassetid://11360443444',
     Shake=false, Sound1={10483790459,{Volume=0.5}},
@@ -752,10 +812,10 @@ local function spawnMalware()
   local entity=Creator.createEntity({
    CustomName='Malware',
    Model='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/Malware%20Update%203%20Mom%20im%20scared%201786216584.txt?raw=true',
-   Speed=300,DelayTime=4,HeightOffset=-2,CanKill=true,KillRange=80,
-   BackwardsMovement=false,BreakLights=true,FlickerLights={true,2},
-   Cycles={Min=2,Max=5,WaitTime=1},
-   CamShake={true,{10,50,0.1,1},100},
+   Speed=editorSetting("Speed",300),DelayTime=editorSetting("Delay",4),HeightOffset=editorSetting("HeightOffset",-2),CanKill=editorSetting("Damage",true),KillRange=editorSetting("DamageRange",80),
+   BackwardsMovement=editorSetting("Reversed",false),BreakLights=editorSetting("Break",true),FlickerLights=editorFlicker(true,2),
+   Cycles=editorCycles(2,5,1),
+   CamShake={editorSetting("CamShake",true),{10,50,0.1,1},editorSetting("ShakeRange",100)},
    Jumpscare={false,{
     Image1='rbxassetid://14629487251',Image2='rbxassetid://14629487251',Shake=false,
     Sound1={10483790459,{Volume=0.5}},Sound2={10483837590,{Volume=0.5}},
@@ -800,10 +860,10 @@ local function spawnA60HardcoreOld()
   local entity=Creator.createEntity({
    CustomName='A-60 Hardcore Old',
    Model='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/A-60HardcoreOld.txt?raw=true',
-   Speed=350,DelayTime=3,HeightOffset=0.5,CanKill=false,KillRange=40,
-   BreakLights=false,BackwardsMovement=false,
-   FlickerLights={false,4},Cycles={Min=1,Max=4,WaitTime=0.05},
-   CamShake={true,{30,30,0.1,1},50},
+   Speed=editorSetting("Speed",350),DelayTime=editorSetting("Delay",3),HeightOffset=editorSetting("HeightOffset",0.5),CanKill=editorSetting("Damage",false),KillRange=editorSetting("DamageRange",40),
+   BreakLights=editorSetting("Break",false),BackwardsMovement=editorSetting("Reversed",false),
+   FlickerLights=editorFlicker(false,4),Cycles=editorCycles(1,4,0.05),
+   CamShake={editorSetting("CamShake",true),{30,30,0.1,1},editorSetting("ShakeRange",50)},
    Jumpscare={false,{Image1='rbxassetid://11394048190',Image2='rbxassetid://11395251069',Shake=true,
     Sound1={10483790459,{Volume=0.5}},Sound2={10483837590,{Volume=0.5}},
     Flashing={true,Color3.fromRGB(255,0,0)},Tease={true,Min=1,Max=3}}},
@@ -839,6 +899,359 @@ local function spawnA60HardcoreOld()
 end
 addCustom('A-60 Hardcore Old',Color3.fromRGB(220,25,25),350,'rush')
 
+-- A-60 Hardcore: current asset supplied by the user (15455640886).
+-- Kept separate from A-60 Hardcore New and its GitHub-hosted model.
+local function spawnA60HardcoreCurrent()
+ local ok,err=pcall(function()
+  local Creator=loadstring(game:HttpGet('https://raw.githubusercontent.com/fernandesdasilvamariainez-coder/Aaaaaaa/refs/heads/main/Old%20Vynixu%20Entity%20Spawner'))()
+  if type(Creator)~='table' or type(Creator.createEntity)~='function' or type(Creator.runEntity)~='function' then
+   error('A-60 Hardcore entity loader unavailable')
+  end
+  local entity=Creator.createEntity({
+   CustomName='A-60 Hardcore',
+   Model='15455640886',
+   Speed=editorSetting('Speed',350),DelayTime=editorSetting('Delay',3),HeightOffset=editorSetting('HeightOffset',0.5),
+   CanKill=editorSetting('Damage',false),KillRange=editorSetting('DamageRange',40),
+   BreakLights=editorSetting('Break',false),BackwardsMovement=editorSetting('Reversed',false),
+   FlickerLights=editorFlicker(false,4),Cycles=editorCycles(1,4,0.05),
+   CamShake={editorSetting('CamShake',true),{30,30,0.1,1},editorSetting('ShakeRange',50)},
+   Jumpscare={false,{}},
+   CustomDialog={'You encountered A-60 Hardcore.','Listen for its warning and stay out of its path.'}
+  })
+  if not entity then error('A-60 Hardcore entity creation failed') end
+  Creator.runEntity(entity)
+ end)
+ if not ok then warn('[A-60 Hardcore] Failed: '..tostring(err)) end
+ return ok
+end
+addCustom('A-60 Hardcore',Color3.fromRGB(200,20,20),350,'rush')
+
+-- A-60 Hardcore New: user-supplied MultiMonster/A-60 model and Old Vynixu backend.
+-- The original pasted script's death-message/achievement spoofing and forced local
+-- damage/jumpscare GUI were intentionally not carried over. Core spawn/movement,
+-- ambience, warning effects, and despawn effects are retained where supported.
+local function spawnA60HardcoreNew()
+ local ok,err=pcall(function()
+  local Creator=loadstring(game:HttpGet('https://pastebin.com/raw/0fSnvfGt'))()
+  if type(Creator)~='table' or type(Creator.createEntity)~='function' or type(Creator.runEntity)~='function' then
+   error('A-60 Hardcore New entity loader unavailable')
+  end
+  local entity=Creator.createEntity({
+   CustomName='A-60 Hardcore New',
+   Model='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/A-60Hardcore%20New.txt?raw=true',
+   Speed=editorSetting('Speed',450),DelayTime=editorSetting('Delay',5),HeightOffset=editorSetting('HeightOffset',0.5),
+   CanKill=editorSetting('Damage',false),KillRange=editorSetting('DamageRange',120),
+   BreakLights=editorSetting('Break',false),BackwardsMovement=editorSetting('Reversed',false),
+   FlickerLights=editorFlicker(false,4),
+   Cycles=editorCycles(2,6,0),
+   CamShake={editorSetting('CamShake',true),{20,30,0.1,1},editorSetting('ShakeRange',90)},
+   Jumpscare={false,{}},
+   CustomDialog={'You encountered A-60 Hardcore New.','A loud scream warns when it begins moving.','Stay out of its path and keep your distance.'}
+  })
+  if not entity then error('A-60 Hardcore New entity creation failed') end
+  local alive=true
+  local function playGitSound(url,fileName,volume)
+   if type(writefile)~='function' or type(isfile)~='function' or type(getcustomasset or getsynasset)~='function' then return end
+   local success,reason=pcall(function()
+    if not isfile(fileName..'.mp3') then writefile(fileName..'.mp3',game:HttpGet(url)) end
+    local sound=Instance.new('Sound')
+    sound.SoundId=(getcustomasset or getsynasset)(fileName..'.mp3')
+    sound.Volume=volume or 1
+    sound.Parent=workspace
+    sound:Play()
+    game:GetService('Debris'):AddItem(sound,30)
+   end)
+   if not success then warn('[A-60 Hardcore New] Sound failed: '..tostring(reason)) end
+  end
+  local function cameraShake(magnitude,roughness,fadeIn,fadeOut)
+   pcall(function()
+    local shaker=require(game:GetService('ReplicatedStorage'):WaitForChild('CameraShaker'))
+    local camera=workspace.CurrentCamera
+    local cam=shaker.new(Enum.RenderPriority.Camera.Value,function(cf) camera.CFrame=camera.CFrame*cf end)
+    cam:Start()
+    cam:ShakeOnce(magnitude,roughness,fadeIn,fadeOut)
+   end)
+  end
+  local function colorFlash(name,tint,saturation,contrast,duration)
+   local effect=Instance.new('ColorCorrectionEffect')
+   effect.Name=name; effect.TintColor=tint; effect.Saturation=saturation; effect.Contrast=contrast
+   effect.Parent=game:GetService('Lighting')
+   TweenService:Create(effect,TweenInfo.new(duration),{TintColor=Color3.fromRGB(255,255,255),Saturation=0,Contrast=0}):Play()
+   game:GetService('Debris'):AddItem(effect,duration+3)
+  end
+  entity.Debug.OnEntitySpawned=function()
+   alive=true
+   playGitSound('https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Entities-Sounds/blob/main/MultimonsterStart.mp3?raw=true','MultiMonsterBegin',6.5)
+   colorFlash('A60HardcoreNewSpawn',Color3.fromRGB(80,0,0),0,0.5,1.5)
+   cameraShake(10,10,0.1,5)
+   task.spawn(function()
+    local model=workspace:FindFirstChild('A-60 Hardcore New') or workspace:FindFirstChild('A-60')
+    local rush=model and model:FindFirstChild('RushNew',true)
+    local ids=rush and rush:FindFirstChild('IMAGEIDS')
+    local face=rush and rush:FindFirstChild('Main') and rush.Main:FindFirstChild('Face')
+    while alive and model and model.Parent and ids and face and face.Parent do
+     local images=ids:GetChildren()
+     if #images>0 then
+      local selectedImage=images[math.random(1,#images)]
+      local imageId
+      pcall(function() imageId=selectedImage.Image end)
+      if imageId then pcall(function() face.Texture=imageId end) end
+     end
+     task.wait(0.04)
+    end
+   end)
+  end
+  entity.Debug.OnEntityStartMoving=function()
+   local model=workspace:FindFirstChild('A-60 Hardcore New') or workspace:FindFirstChild('A-60')
+   local rush=model and model:FindFirstChild('RushNew',true)
+   if rush then
+    for _,soundName in ipairs({'BeginScreamClose','BeginScreamFar'}) do
+     local sound=rush:FindFirstChild(soundName,true)
+     if sound and sound:IsA('Sound') then pcall(function() sound:Play() end) end
+    end
+   end
+   local ambience=model and model:FindFirstChild('AmbienceSounds')
+   local ending=ambience and ambience:FindFirstChild('Ambience_A-60_End')
+   if ending and ending:IsA('Sound') then ending.Volume=1 end
+   local breathing=ambience and ambience:FindFirstChild('Breathing End')
+   if breathing and breathing:IsA('Sound') then breathing.TimePosition=30 end
+  end
+  entity.Debug.OnEntityDespawned=function()
+   alive=false
+   local sound=Instance.new('Sound')
+   sound.SoundId='rbxassetid://7757472223'; sound.Volume=10; sound.PlaybackSpeed=0.1; sound.Parent=workspace
+   sound:Play(); game:GetService('Debris'):AddItem(sound,25)
+   colorFlash('A60HardcoreNewDespawn',Color3.fromRGB(255,0,4),-0.7,0.2,15)
+   cameraShake(10,4,0.1,15)
+  end
+  Creator.runEntity(entity)
+ end)
+ if not ok then warn('[A-60 Hardcore New] Failed: '..tostring(err)) end
+ return ok
+end
+addCustom('A-60 Hardcore New',Color3.fromRGB(180,0,0),450,'rush')
+
+-- The Deer God: supplied Old Vynixu preset with editor-backed settings.
+-- The original achievement-unlock exploit and global achievement-table edits are omitted.
+local deerGodCreator
+local function spawnDeerGod()
+ local ok,err=pcall(function()
+  if not deerGodCreator then
+   deerGodCreator=loadstring(game:HttpGet('https://raw.githubusercontent.com/fernandesdasilvamariainez-coder/Aaaaaaa/refs/heads/main/Old%20Vynixu%20Entity%20Spawner'))()
+  end
+  if type(deerGodCreator)~='table' or type(deerGodCreator.createEntity)~='function' or type(deerGodCreator.runEntity)~='function' then
+   error('Old Vynixu entity spawner unavailable')
+  end
+  local entity=deerGodCreator.createEntity({
+   CustomName='The Deer God',
+   Model='11393625763',
+   Speed=editorSetting('Speed',25),
+   DelayTime=editorSetting('Delay',0),
+   HeightOffset=editorSetting('HeightOffset',0),
+   CanKill=editorSetting('Damage',true),
+   KillRange=editorSetting('DamageRange',15),
+   BreakLights=editorSetting('Break',true),
+   BackwardsMovement=editorSetting('Reversed',false),
+   FlickerLights=editorFlicker(true,80),
+   Cycles=editorCycles(1,1,0.1),
+   CamShake={editorSetting('CamShake',true),{5,15,0.1,1},editorSetting('ShakeRange',10)},
+   Jumpscare={true,{
+    Image1='rbxassetid://11394027278',Image2='rbxassetid://11395249153',Shake=true,
+    Sound1={10483790459,{Volume=0.5}},Sound2={10483837590,{Volume=0.5}},
+    Flashing={true,Color3.fromRGB(48,25,52)},Tease={false,Min=1,Max=1}
+   }},
+   CustomDialog={'You died to whom you call The Deer God','Closets Wont work! So try running','Its form is incomprehensible to a human upclose...','..-so avoid Eye Contact'}
+  })
+  if not entity then error('The Deer God entity creation returned nil') end
+
+  local chaseSound
+  local cameraShaker
+  local camShake
+  local function stopEarthquake()
+   if camShake then pcall(function() camShake:StopSustained(5) end); camShake=nil end
+  end
+  entity.Debug.OnEntitySpawned=function()
+   local soundOk,soundErr=pcall(function()
+    if type(writefile)=='function' and type(isfile)=='function' and type(getcustomasset or getsynasset)=='function' then
+     local fileName='TheDeerGod_Followed.mp3'
+     local soundUrl='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Entities-Sounds/blob/main/followed.mp3?raw=true'
+     if not isfile(fileName) then writefile(fileName,game:HttpGet(soundUrl)) end
+     chaseSound=Instance.new('Sound')
+     chaseSound.Name='TheDeerGodChase'
+     chaseSound.SoundId=(getcustomasset or getsynasset)(fileName)
+     chaseSound.Volume=0
+     chaseSound.Parent=workspace
+     chaseSound:Play()
+     TweenService:Create(chaseSound,TweenInfo.new(5),{Volume=10}):Play()
+    end
+   end)
+   if not soundOk then warn('[The Deer God] Chase sound unavailable: '..tostring(soundErr)) end
+   local shakeOk,shakeErr=pcall(function()
+    cameraShaker=require(game:GetService('ReplicatedStorage'):WaitForChild('CameraShaker'))
+    local camera=workspace.CurrentCamera
+    camShake=cameraShaker.new(Enum.RenderPriority.Camera.Value,function(cf)
+     if camera and camera.Parent then camera.CFrame=camera.CFrame*cf end
+    end)
+    camShake:Start()
+    camShake:ShakeSustain(cameraShaker.Presets.Earthquake)
+   end)
+   if not shakeOk then warn('[The Deer God] Sustained camera shake unavailable: '..tostring(shakeErr)) end
+  end
+  entity.Debug.OnEntityDespawned=function()
+   stopEarthquake()
+   if chaseSound then
+    pcall(function()
+     TweenService:Create(chaseSound,TweenInfo.new(10),{Volume=0,PlaybackSpeed=0}):Play()
+     game:GetService('Debris'):AddItem(chaseSound,11)
+    end)
+    chaseSound=nil
+   end
+  end
+  entity.Debug.OnDeath=function()
+   _G.DOORS_DEER_GOD_DIED=true
+  end
+  deerGodCreator.runEntity(entity)
+ end)
+ if not ok then warn('[The Deer God] Spawn failed: '..tostring(err)) end
+ return ok
+end
+addCustom('The Deer God',Color3.fromRGB(48,25,52),25,'rush')
+
+
+-- Crasher: classic Ripper model with the user's Old Vynixu configuration.
+-- The external achievement-table manipulation was intentionally not included.
+local crasherCreator
+local function spawnCrasher()
+ local ok,err=pcall(function()
+  if not crasherCreator then
+   crasherCreator=loadstring(game:HttpGet('https://pastebin.com/raw/0fSnvfGt'))()
+  end
+  if type(crasherCreator)~='table' or type(crasherCreator.createEntity)~='function' or type(crasherCreator.runEntity)~='function' then
+   error('Old Vynixu entity creator unavailable')
+  end
+  local entity=crasherCreator.createEntity({
+   CustomName='Crasher',
+   Model='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/RipperClassic.txt?raw=true',
+   Speed=editorSetting('Speed',250),
+   DelayTime=editorSetting('Delay',0.5),
+   HeightOffset=editorSetting('HeightOffset',1),
+   CanKill=editorSetting('Damage',true),
+   KillRange=editorSetting('DamageRange',10),
+   BackwardsMovement=editorSetting('Reversed',false),
+   BreakLights=editorSetting('Break',true),
+   FlickerLights=editorFlicker(true,3),
+   Cycles=editorCycles(2,6,0),
+   CamShake={editorSetting('CamShake',true),creatorShake(editorSetting('ShakeFormat','5,50,0.1,1')),editorSetting('ShakeRange',100)},
+   Jumpscare={true,{
+    Image1='rbxassetid://11823865636',Image2='rbxassetid://11823865636',Shake=true,
+    Sound1={0,{Volume=0.5}},Sound2={137315230783658,{Volume=0.5}},
+    Flashing={true,Color3.fromRGB(0,0,0)},Tease={true,Min=1,Max=4}
+   }},
+   CustomDialog={'Crasher??'}
+  })
+  if not entity then error('Crasher entity creation returned nil') end
+  entity.Debug.OnEntitySpawned=function() print('Crasher has spawned:',entity) end
+  entity.Debug.OnEntityDespawned=function() print('Crasher has despawned:',entity) end
+  entity.Debug.OnEntityStartMoving=function() print('Crasher has started moving:',entity) end
+  entity.Debug.OnEntityFinishedRebound=function() print('Crasher has finished rebound:',entity) end
+  entity.Debug.OnEntityEnteredRoom=function(room) print('Crasher has entered room:',room) end
+  entity.Debug.OnLookAtEntity=function() print('Player looked at Crasher') end
+  entity.Debug.OnDeath=function() warn('Player died to Crasher') end
+  crasherCreator.runEntity(entity)
+ end)
+ if not ok then warn('[Crasher] Spawn failed: '..tostring(err)) end
+ return ok
+end
+addCustom('Crasher',Color3.fromRGB(25,20,30),250,'rush')
+
+
+-- TrollFace: supplied Old Vynixu configuration.
+local trollFaceCreator
+local function spawnTrollFace()
+ local ok,err=pcall(function()
+  if not trollFaceCreator then
+   trollFaceCreator=loadstring(game:HttpGet('https://pastebin.com/raw/0fSnvfGt'))()
+  end
+  if type(trollFaceCreator)~='table' or type(trollFaceCreator.createEntity)~='function' or type(trollFaceCreator.runEntity)~='function' then
+   error('Old Vynixu entity creator unavailable')
+  end
+  local entity=trollFaceCreator.createEntity({
+   CustomName='TrollFace',
+   Model='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/TrollFaceYEYEYE.txt?raw=true',
+   Speed=editorSetting('Speed',250),
+   DelayTime=editorSetting('Delay',2),
+   HeightOffset=editorSetting('HeightOffset',0),
+   CanKill=editorSetting('Damage',true),
+   KillRange=editorSetting('DamageRange',40),
+   BreakLights=editorSetting('Break',false),
+   BackwardsMovement=editorSetting('Reversed',false),
+   FlickerLights=editorFlicker(false,50),
+   Cycles=editorCycles(1,1,1),
+   CamShake={editorSetting('CamShake',true),creatorShake(editorSetting('ShakeFormat','3.5,30,0.1,1')),editorSetting('ShakeRange',90)},
+   Jumpscare={false,{
+    Image1='rbxassetid://0',Image2='rbxassetid://0',Shake=false,
+    Sound1={103879029437685,{Volume=0.9}},Sound2={10483837590,{Volume=0.9}},
+    Flashing={true,Color3.fromRGB(100,0,100)},Tease={false,Min=2,Max=4}
+   }},
+   CustomDialog={'Uhh...','Alright.'}
+  })
+  if not entity then error('TrollFace entity creation returned nil') end
+  entity.Debug.OnEntitySpawned=function(entityTable) print('loop',entityTable) end
+  trollFaceCreator.runEntity(entity)
+ end)
+ if not ok then warn('[TrollFace] Spawn failed: '..tostring(err)) end
+ return ok
+end
+addCustom('TrollFace',Color3.fromRGB(100,0,100),250,'rush')
+
+
+-- Rebound path helper: follows the same CurrentRooms.Nodes path as Rush, but in reverse.
+local function getReboundReversePath()
+ local rooms=workspace:FindFirstChild("CurrentRooms")
+ if not rooms then error("CurrentRooms folder is missing") end
+ local numberedRooms={}
+ for _,room in ipairs(rooms:GetChildren()) do
+  local roomNumber=tonumber(room.Name)
+  if roomNumber then table.insert(numberedRooms,{Number=roomNumber,Room=room}) end
+ end
+ table.sort(numberedRooms,function(a,b) return a.Number>b.Number end)
+ local path={}
+ for _,entry in ipairs(numberedRooms) do
+  local nodes=entry.Room:FindFirstChild("Nodes")
+  if nodes then
+   local roomNodes={}
+   for _,node in ipairs(nodes:GetChildren()) do
+    if node:IsA("BasePart") then table.insert(roomNodes,node) end
+   end
+   table.sort(roomNodes,function(a,b) return (tonumber(a.Name) or 0)>(tonumber(b.Name) or 0) end)
+   for _,node in ipairs(roomNodes) do table.insert(path,node) end
+  end
+ end
+ if #path==0 then error("No Rush path nodes found in CurrentRooms.*.Nodes") end
+ return path
+end
+
+local function moveReboundAlongReversePath(model,path,speed,heightOffset,delay)
+ local chosenSpeed=math.max(1,tonumber(speed) or 450)
+ for _,node in ipairs(path) do
+  if not model.Parent then return false end
+  local target=node.CFrame+CFrame.new(0,3.5+(tonumber(heightOffset) or 0),0)
+  local start=model:GetPivot()
+  local distance=(start.Position-target.Position).Magnitude
+  local duration=math.max(0.05,distance/chosenSpeed)
+  local driver=Instance.new("CFrameValue")
+  driver.Value=start
+  local connection=driver:GetPropertyChangedSignal("Value"):Connect(function()
+   if model.Parent then model:PivotTo(driver.Value) end
+  end)
+  local tween=TweenService:Create(driver,TweenInfo.new(duration,Enum.EasingStyle.Linear),{Value=target})
+  tween:Play(); tween.Completed:Wait()
+  connection:Disconnect(); driver:Destroy()
+  if delay and delay>0 then task.wait(delay) end
+ end
+ return model.Parent~=nil
+end
+
 -- Rebound Hardcore Old: original 2-second room traversal, no custom visual jumpscare.
 local function spawnReboundHardcoreFast(redVariant)
  task.spawn(function()
@@ -850,7 +1263,7 @@ local function spawnReboundHardcoreFast(redVariant)
    if not isfile(path) then writefile(path,game:HttpGet(url)) end
    local model=game:GetObjects(asset(path))[1]
    if not model then error('Rebound model did not load') end
-   model.Name=redVariant and 'Rebound Hardcore Old RED' or 'ReboundHardcoreOld'; model.Parent=workspace
+   model.Name=redVariant and 'Rebound Hardcore Old RED' or 'ReboundHardcoreOld'; trackEntityModel(model); model.Parent=workspace
    local part=model:FindFirstChild('Rebound',true)
    if not (part and part:IsA('BasePart')) then model:Destroy(); error('Rebound part missing') end
    part.Anchored=true; part.CanCollide=false
@@ -884,22 +1297,17 @@ local function spawnReboundHardcoreFast(redVariant)
    local rooms=workspace:FindFirstChild('CurrentRooms')
    if not (latest and rooms) then model:Destroy(); error('CurrentRooms or LatestRoom missing') end
    task.wait(1)
-   local start=rooms:FindFirstChild(tostring(latest.Value+1)) or rooms:FindFirstChild(tostring(latest.Value))
-   if start and start:FindFirstChild('RoomEnd') then part.CFrame=start.RoomEnd.CFrame end
+   local reversePath=getReboundReversePath()
+   local firstNode=reversePath[1]
+   if firstNode then model:PivotTo(firstNode.CFrame*CFrame.new(0,3.5+(tonumber(editorSetting('HeightOffset',0)) or 0),0)) end
    playSound('https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Entities-Sounds/blob/main/ReboundMoving.mp3?raw=true',redVariant and 'ReboundMovingRed' or 'ReboundMovingFast',9)
    local function sweep()
-    for i=latest.Value+1,0,-1 do
-     if not model.Parent then break end
-     local room=rooms:FindFirstChild(tostring(i))
-     local goal=room and room:FindFirstChild('RoomStart')
-     if goal then
-      local tween=TweenService:Create(part,TweenInfo.new(2,Enum.EasingStyle.Linear),{CFrame=goal.CFrame+CFrame.new(0,0.6,0)})
-      tween:Play(); tween.Completed:Wait(); task.wait(0.12)
-     end
-    end
+    reversePath=getReboundReversePath() -- refresh path after newly generated rooms appear
+    return moveReboundAlongReversePath(model,reversePath,editorSetting('Speed',450),editorSetting('HeightOffset',0),0.12)
    end
    sweep()
-   for _=1,math.random(2,6) do
+   local editorRebounds=math.max(0,math.floor(tonumber(editorSetting('Rebounds',4)) or 4))
+   for _=1,editorRebounds do
     if not model.Parent then break end
     local before=latest.Value
     repeat task.wait(0.2) until latest.Value~=before or not model.Parent
@@ -915,6 +1323,328 @@ addCustom('Rebound Hardcore Old',Color3.fromRGB(65,138,255),450,'rush')
 
 addCustom('Rebound Hardcore Old RED',Color3.fromRGB(255,30,30),450,'rush')
 
+-- Rebound: alternate user-supplied Roblox model asset (12681048278).
+-- Move the complete model with PivotTo; tweening one child part leaves the rest behind.
+local function spawnReboundAsset()
+ task.spawn(function()
+  local ok,err=pcall(function()
+   local objects=game:GetObjects('rbxassetid://12681048278')
+   local loaded=objects and objects[1]
+   if not loaded then error('Roblox model asset 12681048278 did not load or is not accessible') end
+   local model
+   if loaded:IsA('Model') then
+    model=loaded
+   elseif loaded:IsA('BasePart') then
+    model=Instance.new('Model'); loaded.Parent=model
+   else
+    model=loaded:FindFirstChildWhichIsA('Model',true)
+    if not model then
+     local part=loaded:FindFirstChildWhichIsA('BasePart',true)
+     if not part then loaded:Destroy(); error('Asset 12681048278 contains no movable model or BasePart') end
+     model=Instance.new('Model'); part.Parent=model
+    end
+   end
+   model.Name='Rebound'; trackEntityModel(model); model.Parent=workspace
+   local parts={}
+   for _,obj in ipairs(model:GetDescendants()) do
+    if obj:IsA('BasePart') then
+     obj.Anchored=true; obj.CanCollide=false
+     table.insert(parts,obj)
+    end
+   end
+   if #parts==0 then model:Destroy(); error('Asset 12681048278 contains no BaseParts') end
+   local lighting=game:GetService('Lighting')
+   local tint=Instance.new('ColorCorrectionEffect'); tint.Name='ReboundWarning'; tint.TintColor=Color3.fromRGB(65,138,255)
+   tint.Saturation=-0.7; tint.Contrast=0.2; tint.Parent=lighting
+   TweenService:Create(tint,TweenInfo.new(5),{TintColor=Color3.new(1,1,1),Saturation=0,Contrast=0}):Play()
+   game:GetService('Debris'):AddItem(tint,6)
+   local function playSound(url,name,volume)
+    pcall(function()
+     local assetFn=getcustomasset or getsynasset
+     if not (assetFn and isfile and writefile) then return end
+     local path=name..'.mp3'; if not isfile(path) then writefile(path,game:HttpGet(url)) end
+     local snd=Instance.new('Sound'); snd.SoundId=assetFn(path); snd.Volume=volume; snd.Parent=parts[1]; snd:Play()
+     game:GetService('Debris'):AddItem(snd,30)
+    end)
+   end
+   playSound('https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Entities-Sounds/blob/main/Rebound.mp3?raw=true','ReboundAssetWarning',7)
+   local data=game:GetService('ReplicatedStorage'):WaitForChild('GameData',5)
+   local latest=data and data:FindFirstChild('LatestRoom')
+   local rooms=workspace:FindFirstChild('CurrentRooms')
+   if not (latest and rooms) then model:Destroy(); error('CurrentRooms or LatestRoom missing') end
+   task.wait(math.max(0,tonumber(editorSetting('Delay',0)) or 0))
+
+   local reversePath=getReboundReversePath()
+   local firstNode=reversePath[1]
+   local height=tonumber(editorSetting('HeightOffset',0.6)) or 0.6
+   if firstNode then model:PivotTo(firstNode.CFrame*CFrame.new(0,3.5+height,0)) end
+   playSound('https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Entities-Sounds/blob/main/ReboundMoving.mp3?raw=true','ReboundAssetMoving',9)
+
+   local function sweep()
+    reversePath=getReboundReversePath() -- include rooms generated since the previous pass
+    return moveReboundAlongReversePath(model,reversePath,editorSetting('Speed',450),height,tonumber(editorSetting('ReboundDelay',0.12)) or 0.12)
+   end
+   sweep()
+   local count=math.max(0,math.floor(tonumber(editorSetting('Rebounds',2)) or 2))
+   for _=1,count do
+    if not model.Parent then break end
+    local before=latest.Value
+    repeat task.wait(0.2) until latest.Value~=before or not model.Parent
+    if model.Parent then
+     playSound('https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Entities-Sounds/blob/main/Rebound.mp3?raw=true','ReboundAssetWarning',7)
+     sweep()
+    end
+   end
+   if model.Parent then model:Destroy() end
+  end)
+  if not ok then warn('[Rebound] Spawn failed: '..tostring(err)) end
+ end)
+ return true
+end
+addCustom('Rebound',Color3.fromRGB(65,138,255),450,'rush')
+
+
+-- Seek: chases the local player and despawns after five room/door advances.
+-- Default model is cloned from the live DOORS game when available; the editor Asset ID field can override it.
+local function spawnSeekFiveDoors()
+ task.spawn(function()
+  local ok,err=pcall(function()
+   local Players=game:GetService('Players')
+   local RunService=game:GetService('RunService')
+   local ReplicatedStorage=game:GetService('ReplicatedStorage')
+   local player=Players.LocalPlayer
+   local data=ReplicatedStorage:WaitForChild('GameData',5)
+   local latest=data and data:FindFirstChild('LatestRoom')
+   if not latest then error('GameData.LatestRoom is unavailable') end
+
+   local profile=(_G.DOORS_EDITOR_ACTIVE_NAME=='Seek (5 Doors)' and _G.DOORS_EDITOR_ACTIVE_PROFILE) or nil
+   local assetId=(type(profile)=='table' and profile.AssetId) or 'DOORS_GAME_SEEK_MODEL'
+   local loaded
+   if assetId and assetId~='' and assetId~='DOORS_GAME_SEEK_MODEL' then
+    local assetText=tostring(assetId)
+    if assetText:match('^%d+$') then assetText='rbxassetid://'..assetText end
+    local objects=game:GetObjects(assetText)
+    loaded=objects and objects[1]
+    if not loaded then error('Custom Seek model did not load: '..assetText) end
+   else
+    local containers={ReplicatedStorage,workspace}
+    for _,container in ipairs(containers) do
+     for _,obj in ipairs(container:GetDescendants()) do
+      if obj.Name:lower()=='seek' and (obj:IsA('Model') or obj:IsA('BasePart')) then
+       loaded=obj:Clone(); break
+      end
+     end
+     if loaded then break end
+    end
+    if not loaded then error('Could not find the live DOORS Seek model. Enter a model asset ID in Entity Editor to override it.') end
+   end
+
+   local model
+   if loaded:IsA('Model') then model=loaded
+   elseif loaded:IsA('BasePart') then model=Instance.new('Model'); loaded.Parent=model
+   else
+    model=loaded:FindFirstChildWhichIsA('Model',true)
+    if not model then
+     local part=loaded:FindFirstChildWhichIsA('BasePart',true)
+     if not part then loaded:Destroy(); error('Seek asset contains no Model or BasePart') end
+     model=Instance.new('Model'); part.Parent=model
+    end
+   end
+   model.Name='Seek (5 Doors)'
+   trackEntityModel(model); model.Parent=workspace
+   local partCount=0
+   for _,obj in ipairs(model:GetDescendants()) do
+    if obj:IsA('BasePart') then obj.Anchored=true; obj.CanCollide=false; partCount=partCount+1 end
+   end
+   if partCount==0 then model:Destroy(); error('Seek model contains no BaseParts') end
+
+   task.wait(math.max(0,tonumber((type(profile)=='table' and profile.Delay) or 0) or 0))
+   local function getRoot()
+    local char=player and player.Character
+    return char and char:FindFirstChild('HumanoidRootPart')
+   end
+   local root=getRoot()
+   if not root then model:Destroy(); error('Player character root is unavailable') end
+   local height=tonumber((type(profile)=='table' and profile.HeightOffset) or 0) or 0
+   local speed=math.clamp(tonumber((type(profile)=='table' and profile.Speed) or 24) or 24,1,300)
+   model:PivotTo(root.CFrame*CFrame.new(0,0,32))
+
+   local doorsPassed=0
+   local active=true
+   local roomConnection=latest:GetPropertyChangedSignal('Value'):Connect(function()
+    doorsPassed=doorsPassed+1
+    if doorsPassed>=5 then active=false end
+   end)
+   local heartbeat
+   heartbeat=RunService.Heartbeat:Connect(function(dt)
+    if not active or not model.Parent then
+     if heartbeat then heartbeat:Disconnect() end
+     if roomConnection then roomConnection:Disconnect() end
+     if model.Parent then model:Destroy() end
+     return
+    end
+    local targetRoot=getRoot()
+    if not targetRoot then return end
+    local pivot=model:GetPivot()
+    local target=targetRoot.Position+Vector3.new(0,3.5+height,0)
+    local offset=target-pivot.Position
+    local distance=offset.Magnitude
+    if distance>0.05 then
+     local step=math.min(distance,speed*dt)
+     local nextPos=pivot.Position+offset.Unit*step
+     model:PivotTo(CFrame.lookAt(nextPos,targetRoot.Position))
+    end
+   end)
+   task.spawn(function()
+    while active and model.Parent do task.wait(0.25) end
+    if heartbeat then heartbeat:Disconnect() end
+    if roomConnection then roomConnection:Disconnect() end
+    if model.Parent then model:Destroy() end
+   end)
+  end)
+  if not ok then warn('[Seek 5 Doors] '..tostring(err)) end
+ end)
+ return true
+end
+addCustom('Seek (5 Doors)',Color3.fromRGB(20,20,20),24,'chase')
+
+-- A-400: remains inside the current room, changing to random positions until its door opens.
+local function spawnA400RoomStayer()
+ task.spawn(function()
+  local ok,err=pcall(function()
+   local objects=game:GetObjects('rbxassetid://124722644567174')
+   local loaded=objects and objects[1]
+   if not loaded then error('A-400 asset 124722644567174 did not load') end
+   local model
+   if loaded:IsA('Model') then model=loaded
+   elseif loaded:IsA('BasePart') then model=Instance.new('Model'); loaded.Parent=model
+   else
+    model=loaded:FindFirstChildWhichIsA('Model',true)
+    if not model then
+     local part=loaded:FindFirstChildWhichIsA('BasePart',true)
+     if not part then loaded:Destroy(); error('A-400 asset contains no Model or BasePart') end
+     model=Instance.new('Model'); part.Parent=model
+    end
+   end
+   model.Name='A-400'; trackEntityModel(model); model.Parent=workspace
+   local parts={}
+   for _,obj in ipairs(model:GetDescendants()) do
+    if obj:IsA('BasePart') then obj.Anchored=true; obj.CanCollide=false; table.insert(parts,obj) end
+   end
+   if #parts==0 then model:Destroy(); error('A-400 model contains no BaseParts') end
+
+   local data=game:GetService('ReplicatedStorage'):WaitForChild('GameData',5)
+   local latest=data and data:FindFirstChild('LatestRoom')
+   local rooms=workspace:FindFirstChild('CurrentRooms')
+   if not (latest and rooms) then model:Destroy(); error('CurrentRooms or GameData.LatestRoom missing') end
+   local room=rooms:FindFirstChild(tostring(latest.Value))
+   if not room then model:Destroy(); error('Could not find the current room for A-400') end
+
+   local floorPart
+   local bestArea=0
+   for _,obj in ipairs(room:GetDescendants()) do
+    if obj:IsA('BasePart') and obj.Size.X>8 and obj.Size.Z>8 and obj.Size.Y<8 then
+     local area=obj.Size.X*obj.Size.Z
+     local name=obj.Name:lower()
+     if area>bestArea or (name:find('floor') and not (floorPart and floorPart.Name:lower():find('floor'))) then
+      floorPart=obj; bestArea=area
+     end
+    end
+   end
+   local boundsCFrame,boundsSize=room:GetBoundingBox()
+   local function randomRoomCFrame()
+    local height=tonumber(editorSetting('HeightOffset',0)) or 0
+    if floorPart then
+     local x=(math.random()-0.5)*math.max(2,floorPart.Size.X*0.72)
+     local z=(math.random()-0.5)*math.max(2,floorPart.Size.Z*0.72)
+     return floorPart.CFrame*CFrame.new(x,floorPart.Size.Y/2+3.5+height,z)
+    end
+    local x=(math.random()-0.5)*math.max(4,boundsSize.X*0.45)
+    local z=(math.random()-0.5)*math.max(4,boundsSize.Z*0.45)
+    return boundsCFrame*CFrame.new(x,-boundsSize.Y/2+3.5+height,z)
+   end
+   local function doorIsOpen()
+    local door=room:FindFirstChild('Door',true)
+    if not door then return false end
+    local function truthy(v) return v==true or v==1 or v=='true' end
+    for _,obj in ipairs({door,table.unpack(door:GetDescendants())}) do
+     for _,key in ipairs({'Open','Opened','IsOpen'}) do
+      local value=obj:GetAttribute(key)
+      if truthy(value) then return true end
+     end
+     if (obj:IsA('BoolValue') or obj:IsA('IntValue') or obj:IsA('StringValue')) and
+        (obj.Name:lower()=='open' or obj.Name:lower()=='opened' or obj.Name:lower()=='isopen') and truthy(obj.Value) then
+      return true
+     end
+     if obj:IsA('HingeConstraint') and math.abs(obj.CurrentAngle)>20 then return true end
+    end
+    return false
+   end
+   model:PivotTo(randomRoomCFrame())
+   local originalRoom=latest.Value
+   while model.Parent and latest.Value==originalRoom and not doorIsOpen() do
+    task.wait(math.random(15,30)/10)
+    if model.Parent and latest.Value==originalRoom and not doorIsOpen() then model:PivotTo(randomRoomCFrame()) end
+   end
+   if model.Parent then model:Destroy() end
+  end)
+  if not ok then warn('[A-400] Room-stayer failed: '..tostring(err)) end
+ end)
+ return true
+end
+addCustom('A-400',Color3.fromRGB(120,120,120),0,'stayer')
+
+-- A-200 (The Scribble): follows Rush's room-node path in the opposite direction.
+local function spawnA200Scribble()
+ task.spawn(function()
+  local ok,err=pcall(function()
+   local objects=game:GetObjects('rbxassetid://101342823585245')
+   local loaded=objects and objects[1]
+   if not loaded then error('A-200 asset 101342823585245 did not load') end
+   local model
+   if loaded:IsA('Model') then model=loaded
+   elseif loaded:IsA('BasePart') then model=Instance.new('Model'); loaded.Parent=model
+   else
+    model=loaded:FindFirstChildWhichIsA('Model',true)
+    if not model then
+     local part=loaded:FindFirstChildWhichIsA('BasePart',true)
+     if not part then loaded:Destroy(); error('A-200 asset contains no Model or BasePart') end
+     model=Instance.new('Model'); part.Parent=model
+    end
+   end
+   model.Name='A-200 (The Scribble)'; trackEntityModel(model); model.Parent=workspace
+   local count=0
+   for _,obj in ipairs(model:GetDescendants()) do
+    if obj:IsA('BasePart') then obj.Anchored=true; obj.CanCollide=false; count=count+1 end
+   end
+   if count==0 then model:Destroy(); error('A-200 model contains no BaseParts') end
+   local data=game:GetService('ReplicatedStorage'):WaitForChild('GameData',5)
+   local latest=data and data:FindFirstChild('LatestRoom')
+   if not latest then model:Destroy(); error('GameData.LatestRoom missing') end
+   task.wait(math.max(0,tonumber(editorSetting('Delay',0)) or 0))
+   local height=tonumber(editorSetting('HeightOffset',0)) or 0
+   local path=getReboundReversePath()
+   if path[1] then model:PivotTo(path[1].CFrame*CFrame.new(0,3.5+height,0)) end
+   local function sweep()
+    path=getReboundReversePath()
+    return moveReboundAlongReversePath(model,path,editorSetting('Speed',200),height,tonumber(editorSetting('ReboundDelay',0)) or 0)
+   end
+   sweep()
+   local passes=math.max(0,math.floor(tonumber(editorSetting('Rebounds',0)) or 0))
+   for _=1,passes do
+    if not model.Parent then break end
+    local before=latest.Value
+    repeat task.wait(0.2) until latest.Value~=before or not model.Parent
+    if model.Parent then sweep() end
+   end
+   if model.Parent then model:Destroy() end
+  end)
+  if not ok then warn('[A-200 The Scribble] Reverse Rush path failed: '..tostring(err)) end
+ end)
+ return true
+end
+addCustom('A-200 (The Scribble)',Color3.fromRGB(35,35,35),200,'rush')
+
 -- Shocker: gaze-triggered 30-damage encounter; no custom visual jumpscare.
 local function spawnShocker()
  local ok,err=pcall(function()
@@ -925,7 +1655,7 @@ local function spawnShocker()
   if not root or not hum or not cam then error('Character or camera not ready') end
   local model=game:GetObjects('rbxassetid://81809115282785')[1]
   if not model then error('Shocker model unavailable') end
-  model.Name='Shocker'; model.Parent=workspace
+  model.Name='Shocker'; trackEntityModel(model); model.Parent=workspace
   local shocker=model:IsA('BasePart') and model or model:FindFirstChildWhichIsA('BasePart',true)
   if not shocker then model:Destroy(); error('No Shocker BasePart') end
   local originalAnchored=shocker.Anchored
@@ -962,8 +1692,8 @@ local function spawnShocker()
    if scream and scream:IsA('Sound') then scream:Play() end
    TweenService:Create(shocker,TweenInfo.new(.4,Enum.EasingStyle.Circular,Enum.EasingDirection.In),{CFrame=root.CFrame}):Play()
    task.wait(1)
-   if not done and hum.Parent and hum.Health>0 then
-    hum:TakeDamage(30)
+   if not done and hum.Parent and hum.Health>0 and editorSetting('Damage',true) then
+    hum:TakeDamage(tonumber(editorSetting('DamageAmount',30)) or 30)
     local shakerModule=game:GetService('ReplicatedStorage'):FindFirstChild('CameraShaker')
     if shakerModule then
      pcall(function()
@@ -993,10 +1723,10 @@ local function spawnTerror()
   local entity=Creator.createEntity({
    CustomName='Terror',
    Model='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/Terror%20(100%25%20OFICIAL%20ORIGINAL%20O%25%20VIRUS).txt?raw=true',
-   Speed=2000,DelayTime=7,HeightOffset=0,CanKill=true,KillRange=30,
-   BreakLights=true,BackwardsMovement=false,
-   FlickerLights={true,5},Cycles={Min=5,Max=8,WaitTime=1},
-   CamShake={true,{1.5,10,0.1,1},90},
+   Speed=editorSetting("Speed",2000),DelayTime=editorSetting("Delay",7),HeightOffset=editorSetting("HeightOffset",0),CanKill=editorSetting("Damage",true),KillRange=editorSetting("DamageRange",30),
+   BreakLights=editorSetting("Break",true),BackwardsMovement=editorSetting("Reversed",false),
+   FlickerLights=editorFlicker(true,5),Cycles=editorCycles(5,8,1),
+   CamShake={editorSetting("CamShake",true),{1.5,10,0.1,1},editorSetting("ShakeRange",90)},
    Jumpscare={false,{
     Image1='rbxassetid://10483855823',Image2='rbxassetid://10483999903',
     Shake=true,Sound1={10483790459,{Volume=0.5}},
@@ -1024,10 +1754,10 @@ local function spawnSilence()
   local Spawner=loadstring(game:HttpGet('https://raw.githubusercontent.com/fernandesdasilvamariainez-coder/Aaaaaaa/refs/heads/main/Old%20Vynixu%20Entity%20Spawner'))()
   local entity=Spawner.createEntity({
    CustomName='Silence',Model='rbxassetid://120669221343298',
-   Speed=350,DelayTime=5,HeightOffset=0,CanKill=true,KillRange=40,
-   BackwardsMovement=false,BreakLights=true,
-   FlickerLights={false,1},Cycles={Min=1,Max=5,WaitTime=1},
-   CamShake={true,{10,50,0.1,1},100},
+   Speed=editorSetting("Speed",350),DelayTime=editorSetting("Delay",5),HeightOffset=editorSetting("HeightOffset",0),CanKill=editorSetting("Damage",true),KillRange=editorSetting("DamageRange",40),
+   BackwardsMovement=editorSetting("Reversed",false),BreakLights=editorSetting("Break",true),
+   FlickerLights=editorFlicker(false,1),Cycles=editorCycles(1,5,1),
+   CamShake={editorSetting("CamShake",true),{10,50,0.1,1},editorSetting("ShakeRange",100)},
    Jumpscare={false,{
     Image1='rbxassetid://14629487251',Image2='rbxassetid://11393319553',
     Shake=true,Sound1={10483790459,{Volume=0.5}},
@@ -1065,10 +1795,10 @@ local function spawnSilenceClassic()
   local Creator=loadstring(game:HttpGet('https://raw.githubusercontent.com/fernandesdasilvamariainez-coder/Aaaaaaa/refs/heads/main/Old%20Vynixu%20Entity%20Spawner'))()
   local entity=Creator.createEntity({
    CustomName='Silence (Classic)',Model='rbxassetid://11535812658',
-   Speed=60,DelayTime=0,HeightOffset=0,CanKill=true,KillRange=40,
-   BackwardsMovement=false,FlickerLights={true,2},
-   Cycles={Min=1,Max=1,WaitTime=1},
-   CamShake={false,{5,40,0.1,1},90},
+   Speed=editorSetting("Speed",60),DelayTime=editorSetting("Delay",0),HeightOffset=editorSetting("HeightOffset",0),CanKill=editorSetting("Damage",true),KillRange=editorSetting("DamageRange",40),
+   BackwardsMovement=editorSetting("Reversed",false),FlickerLights=editorFlicker(true,2),
+   Cycles=editorCycles(1,1,1),
+   CamShake={editorSetting("CamShake",false),{5,40,0.1,1},editorSetting("ShakeRange",90)},
    Jumpscare={false,{
     Image1='rbxassetid://0',Image2='rbxassetid://0',Shake=false,
     Sound1={103879029437685,{Volume=0.9}},
@@ -1095,10 +1825,10 @@ local function spawnMadRushChild()
   local entity=creator.createEntity({
    CustomName='Mad Ambush Child (Rush)',
    Model='https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/Rush.txt?raw=true',
-   Speed=550,DelayTime=2,HeightOffset=0,CanKill=true,KillRange=40,
-   BackwardsMovement=false,BreakLights=true,FlickerLights={true,1.5},
-   Cycles={Min=1,Max=1,WaitTime=1},
-   CamShake={true,{8,35,0.1,1},90},Jumpscare={false,{}},
+   Speed=editorSetting("Speed",550),DelayTime=editorSetting("Delay",2),HeightOffset=editorSetting("HeightOffset",0),CanKill=editorSetting("Damage",true),KillRange=editorSetting("DamageRange",40),
+   BackwardsMovement=editorSetting("Reversed",false),BreakLights=editorSetting("Break",true),FlickerLights=editorFlicker(true,1.5),
+   Cycles=editorCycles(1,1,1),
+   CamShake={editorSetting("CamShake",true),{8,35,0.1,1},editorSetting("ShakeRange",90)},Jumpscare={false,{}},
    CustomDialog={'You died to Mad Ambush\'s new child.','A red Rush face with red and blue particles.','Hide when the lights flicker!'}
   })
   local function decorate(model)
@@ -1149,12 +1879,12 @@ local allEntityEdits = _G.DOORS_AllEntity_EditorOverrides
 local specialEntities = {
  ['Mad Ambush Child (Rush)']=true,['Silence (Classic)']=true,['Silence']=true,
  ['Terror']=true,['Shocker']=true,['Rebound Hardcore Old RED']=true,
- ['Rebound Hardcore Old']=true,['A-60 Hardcore Old']=true,['Malware']=true,
+ ['Rebound Hardcore Old']=true,['Rebound']=true,['A-60 Hardcore Old']=true,['Malware']=true,
  ['Greed']=true,['Frostbite']=true,['Cease']=true,['Ripper']=true,
  ['A-60 Troll']=true,['Charged Terror']=true,['Depth']=true,
  ['Mad Depth']=true,['Rush']=true,['Mad Rush']=true,
  ['Ambush']=true,['Mad Ambush']=true,['A-60']=true,
- ['A-60 But Absolutely Pissed']=true,['Matcher']=true
+ ['A-60 But Absolutely Pissed']=true,['A-60 Hardcore']=true,['A-60 Hardcore New']=true,['A-400']=true,['A-200 (The Scribble)']=true,['Seek (5 Doors)']=true,['The Deer God']=true,['Crasher']=true,['TrollFace']=true
 }
 local function spawnEntity(name)
  if name=='Mad Ambush Child (Rush)' then return spawnMadRushChild() end
@@ -1164,7 +1894,16 @@ local function spawnEntity(name)
  if name=='Shocker' then return spawnShocker() end
  if name=='Rebound Hardcore Old RED' then return spawnReboundHardcoreFast(true) end
  if name=='Rebound Hardcore Old' then return spawnReboundHardcoreFast(false) end
+ if name=='Rebound' then return spawnReboundAsset() end
  if name=='A-60 Hardcore Old' then return spawnA60HardcoreOld() end
+ if name=='A-60 Hardcore' then return spawnA60HardcoreCurrent() end
+ if name=='A-60 Hardcore New' then return spawnA60HardcoreNew() end
+ if name=='A-400' then return spawnA400RoomStayer() end
+ if name=='A-200 (The Scribble)' then return spawnA200Scribble() end
+ if name=='Seek (5 Doors)' then return spawnSeekFiveDoors() end
+ if name=='The Deer God' then return spawnDeerGod() end
+ if name=='Crasher' then return spawnCrasher() end
+ if name=='TrollFace' then return spawnTrollFace() end
  if name=='Malware' then return spawnMalware() end
  if name=='Greed' then return spawnRealGreed() end
  if name=='Frostbite' then return spawnFrostbite() end
@@ -1199,7 +1938,7 @@ local function spawnEntity(name)
  local label=Instance.new('TextLabel'); label.Size=UDim2.fromScale(1,1); label.BackgroundTransparency=1
  label.Text=name; label.TextColor3=Color3.new(1,1,1); label.TextStrokeTransparency=0
  label.Font=Enum.Font.GothamBlack; label.TextScaled=true; label.Parent=billboard
- model.Parent=folder
+ trackEntityModel(model); model.Parent=folder
  local alive=true; local age=0; local connection
  connection=RunService.Heartbeat:Connect(function(dt)
   if not alive or not model.Parent or not orb.Parent then if connection then connection:Disconnect() end; return end
@@ -2374,7 +3113,7 @@ local function universalSpawn()
    local start=root.Position-forward*65+Vector3.new(0,offset,0)
    local finish=root.Position+forward*65+Vector3.new(0,offset,0)
    if cfg.Reversed then start,finish=finish,start end
-   model.Parent=workspace
+   trackEntityModel(model); model.Parent=workspace
    model:PivotTo(CFrame.new(start))
    local record={model=model,alive=true}
    table.insert(universalEntities,record)
@@ -2441,7 +3180,23 @@ local ModuleScripts = {
     ModuleEvents = require(ReSt.ClientModules.Module_Events),
     MainGame = require(Plr.PlayerGui.MainUI.Initiator.Main_Game),
 }
+-- The Functions module returns the loader table; the original script forgot to
+-- bind LoadCustomInstance from it, so createEntity tried to call a nil global.
+local LoadCustomInstance = SelfModules.Functions and SelfModules.Functions.LoadCustomInstance
+if type(LoadCustomInstance) ~= 'function' then
+    error('Hotel Minus spawner: Functions.lua did not provide LoadCustomInstance')
+end
 local EntityConnections = {}
+-- Use the same model tracker as the main UI so Despawn All can remove these models too.
+local function trackEntityModel(model)
+    if typeof(model)=='Instance' then
+        pcall(function() model:SetAttribute('DOORSEntitySpawnerOwned', true) end)
+        if type(_G.DOORS_TrackEntityModel)=='function' then
+            _G.DOORS_TrackEntityModel(model)
+        end
+    end
+    return model
+end
 
 local Spawner = {}
 
@@ -2569,6 +3324,7 @@ Spawner.runEntity = function(entityTable)
 
     EntityConnections[entityModel] = {}
     entityModel:SetPrimaryPartCFrame(entityNodes[startNodeIndex].CFrame * CFrame.new(0, 0, startNodeOffset) + Vector3.new(0, 3.5 + entityTable.Config.HeightOffset, 0))
+    trackEntityModel(entityModel)
     entityModel.Parent = workspace
     task.spawn(entityTable.Debug.OnEntitySpawned)
 
@@ -3021,10 +3777,80 @@ local function creatorSpawnHardcore()
  end)
 end
 
+local function makeFallbackRayfield()
+ local fallback={}
+ function fallback:CreateWindow(config)
+  local screen=Instance.new('ScreenGui')
+  screen.Name='DOORS_Entity_Creator_UI'
+  screen.ResetOnSpawn=false
+  screen.IgnoreGuiInset=false
+  screen.ZIndexBehavior=Enum.ZIndexBehavior.Sibling
+  screen.Parent=guiParent
+  local main=Instance.new('Frame'); main.Name='Main'; main.Size=UDim2.new(0,560,0,620); main.Position=UDim2.new(0.5,-280,0.5,-310); main.BackgroundColor3=Color3.fromRGB(20,22,29); main.BorderSizePixel=0; main.Parent=screen
+  local corner=Instance.new('UICorner'); corner.CornerRadius=UDim.new(0,10); corner.Parent=main
+  local title=Instance.new('TextLabel'); title.Size=UDim2.new(1,-20,0,38); title.Position=UDim2.new(0,10,0,4); title.BackgroundTransparency=1; title.Text=tostring(config.Name or 'Entity Creator')..'  (fallback UI)'; title.TextColor3=Color3.fromRGB(245,245,255); title.Font=Enum.Font.GothamBold; title.TextSize=17; title.TextXAlignment=Enum.TextXAlignment.Left; title.Parent=main
+  local tabBar=Instance.new('ScrollingFrame'); tabBar.Size=UDim2.new(1,-16,0,38); tabBar.Position=UDim2.new(0,8,0,44); tabBar.BackgroundTransparency=1; tabBar.BorderSizePixel=0; tabBar.ScrollBarThickness=4; tabBar.ScrollingDirection=Enum.ScrollingDirection.X; tabBar.CanvasSize=UDim2.new(0,0,0,0); tabBar.Parent=main
+  local tabLayout=Instance.new('UIListLayout'); tabLayout.FillDirection=Enum.FillDirection.Horizontal; tabLayout.Padding=UDim.new(0,5); tabLayout.Parent=tabBar
+  tabLayout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function() tabBar.CanvasSize=UDim2.new(0,tabLayout.AbsoluteContentSize.X,0,0) end)
+  local pages={}
+  local function styleButton(b)
+   b.BackgroundColor3=Color3.fromRGB(48,53,68); b.TextColor3=Color3.fromRGB(245,245,250); b.Font=Enum.Font.Gotham; b.TextSize=13; b.BorderSizePixel=0
+   local c=Instance.new('UICorner'); c.CornerRadius=UDim.new(0,6); c.Parent=b
+  end
+  local window={}
+  function window:CreateTab(tabName)
+   local tabButton=Instance.new('TextButton'); tabButton.Size=UDim2.new(0,125,1,0); tabButton.Text=tostring(tabName); styleButton(tabButton); tabButton.Parent=tabBar
+   local page=Instance.new('ScrollingFrame'); page.Name=tostring(tabName)..'_Page'; page.Size=UDim2.new(1,-16,1,-92); page.Position=UDim2.new(0,8,0,86); page.BackgroundColor3=Color3.fromRGB(27,30,39); page.BorderSizePixel=0; page.ScrollBarThickness=6; page.CanvasSize=UDim2.new(0,0,0,0); page.Visible=false; page.Parent=main
+   local pc=Instance.new('UICorner'); pc.CornerRadius=UDim.new(0,8); pc.Parent=page
+   local pad=Instance.new('UIPadding'); pad.PaddingTop=UDim.new(0,8); pad.PaddingBottom=UDim.new(0,8); pad.PaddingLeft=UDim.new(0,8); pad.PaddingRight=UDim.new(0,8); pad.Parent=page
+   local layout=Instance.new('UIListLayout'); layout.Padding=UDim.new(0,6); layout.SortOrder=Enum.SortOrder.LayoutOrder; layout.Parent=page
+   layout:GetPropertyChangedSignal('AbsoluteContentSize'):Connect(function() page.CanvasSize=UDim2.new(0,0,0,layout.AbsoluteContentSize.Y+20) end)
+   pages[#pages+1]=page
+   tabButton.MouseButton1Click:Connect(function() for _,p in ipairs(pages) do p.Visible=false end; page.Visible=true end)
+   if #pages==1 then page.Visible=true end
+   local tab={}
+   local function label(text,height)
+    local l=Instance.new('TextLabel'); l.Size=UDim2.new(1,-4,0,height or 28); l.BackgroundTransparency=1; l.Text=tostring(text or ''); l.TextColor3=Color3.fromRGB(225,228,238); l.Font=Enum.Font.Gotham; l.TextSize=13; l.TextWrapped=true; l.TextXAlignment=Enum.TextXAlignment.Left; l.Parent=page; return l
+   end
+   function tab:CreateSection(name) local l=label('â '..name..' â',30); l.Font=Enum.Font.GothamBold; l.TextColor3=Color3.fromRGB(125,190,255); return l end
+   function tab:CreateParagraph(o) local l=label((o.Title and (o.Title..'\n') or '')..tostring(o.Content or ''),62); l.TextYAlignment=Enum.TextYAlignment.Top; return l end
+   function tab:CreateButton(o)
+    local b=Instance.new('TextButton'); b.Size=UDim2.new(1,-4,0,34); b.Text=tostring(o.Name or 'Button'); styleButton(b); b.Parent=page
+    b.MouseButton1Click:Connect(function() if type(o.Callback)=='function' then local ok,err=pcall(o.Callback); if not ok then warn('[Entity Creator UI] '..tostring(err)) end end end); return b
+   end
+   function tab:CreateInput(o)
+    label(o.Name,20); local box=Instance.new('TextBox'); box.Size=UDim2.new(1,-4,0,32); box.BackgroundColor3=Color3.fromRGB(40,44,56); box.TextColor3=Color3.new(1,1,1); box.PlaceholderText=o.PlaceholderText or ''; box.Text=''; box.ClearTextOnFocus=false; box.Font=Enum.Font.Gotham; box.TextSize=13; box.Parent=page; local c=Instance.new('UICorner'); c.CornerRadius=UDim.new(0,5); c.Parent=box
+    box.FocusLost:Connect(function() if type(o.Callback)=='function' then local ok,err=pcall(o.Callback,box.Text); if not ok then warn('[Entity Creator UI] '..tostring(err)) end end end); return box
+   end
+   function tab:CreateToggle(o)
+    local state=o.CurrentValue==true; local b=Instance.new('TextButton'); b.Size=UDim2.new(1,-4,0,34); styleButton(b); b.Parent=page
+    local function refresh() b.Text=(state and 'â  ' or 'â  ')..tostring(o.Name or 'Toggle') end; refresh()
+    b.MouseButton1Click:Connect(function() state=not state; refresh(); if type(o.Callback)=='function' then local ok,err=pcall(o.Callback,state); if not ok then warn('[Entity Creator UI] '..tostring(err)) end end end); return b
+   end
+   function tab:CreateSlider(o)
+    label(o.Name..' (enter value)',20); local box=Instance.new('TextBox'); box.Size=UDim2.new(1,-4,0,32); box.BackgroundColor3=Color3.fromRGB(40,44,56); box.TextColor3=Color3.new(1,1,1); box.Text=tostring(o.CurrentValue or (o.Range and o.Range[1]) or 0); box.ClearTextOnFocus=false; box.Font=Enum.Font.Gotham; box.TextSize=13; box.Parent=page; local c=Instance.new('UICorner'); c.CornerRadius=UDim.new(0,5); c.Parent=box
+    box.FocusLost:Connect(function() local n=tonumber(box.Text); if n and type(o.Callback)=='function' then local lo=o.Range and o.Range[1] or n; local hi=o.Range and o.Range[2] or n; n=math.clamp(n,lo,hi); box.Text=tostring(n); local ok,err=pcall(o.Callback,n); if not ok then warn('[Entity Creator UI] '..tostring(err)) end end end); return box
+   end
+   function tab:CreateDropdown(o)
+    local opts=o.Options or {}; local current=o.CurrentOption; if type(current)=='table' then current=current[1] end; local idx=1; for i,v in ipairs(opts) do if v==current then idx=i end end
+    local b=Instance.new('TextButton'); b.Size=UDim2.new(1,-4,0,34); styleButton(b); b.Parent=page
+    local function refresh() b.Text=tostring(o.Name or 'Dropdown')..': '..tostring(opts[idx] or current or 'None') end; refresh()
+    b.MouseButton1Click:Connect(function() if #opts>0 then idx=idx%#opts+1; current=opts[idx]; refresh(); if type(o.Callback)=='function' then local value=o.MultipleOptions and {current} or current; local ok,err=pcall(o.Callback,value); if not ok then warn('[Entity Creator UI] '..tostring(err)) end end end end); return b
+   end
+   return tab
+  end
+  return window
+ end
+ return fallback
+end
+
 local function tryRayfield()
  if not USE_RAYFIELD then return false end
  local ok,lib=pcall(function() return loadstring(game:HttpGet('https://sirius.menu/rayfield'))() end)
- if not ok or not lib then warn('Rayfield unavailable; using built-in UI'); return false end
+ if not ok or not lib or type(lib.CreateWindow)~='function' then
+  warn('[Entity Creator] Rayfield could not load; opening the built-in UI instead: '..tostring(lib))
+  lib=makeFallbackRayfield()
+ end
  local window=lib:CreateWindow({Name='DOORS Entity Spawner',LoadingTitle='DOORS Entity Spawner',LoadingSubtitle='GitHub Entities Only',ConfigurationSaving={Enabled=false},KeySystem=false})
  local githubTab=window:CreateTab('GitHub Entities',4483362458)
  local creatorTab=window:CreateTab('Entity Creator',4483362458)
@@ -3032,6 +3858,16 @@ local function tryRayfield()
  local reviveTab=window:CreateTab('Hotel Minus Revive',4483362458)
  local crucifixTab=window:CreateTab('Crucifix',4483362458)
  local editorTab=window:CreateTab('Entity Editor',4483362458)
+ -- Deliberately omitted from Crucifix and Hotel Minus Revive tabs.
+ local function addDespawnAllButton(tab)
+  tab:CreateButton({Name='DESPAWN ALL ENTITIES',Callback=function()
+   despawnAllEntities()
+  end})
+ end
+ addDespawnAllButton(githubTab)
+ addDespawnAllButton(creatorTab)
+ addDespawnAllButton(hotelPlusCreatorTab)
+ addDespawnAllButton(editorTab)
  crucifixTab:CreateParagraph({Title='PenguinManiack Crucifix',Content='Loads the external crucifix script with 10,000,000 uses, range 25, OnAnything enabled, and Fail enabled. External script behavior is not verified.'})
  crucifixTab:CreateButton({Name='Give Crucifix',Callback=function()
   task.spawn(function()
@@ -3189,16 +4025,23 @@ local function tryRayfield()
  githubTab:CreateButton({Name='Spawn Terror (2000% / 5-8 Rebounds / Lethal)',Callback=function() selected='Terror'; spawnEntity('Terror') end})
  githubTab:CreateButton({Name='Spawn Shocker (Look Away / 30 Damage)',Callback=function() selected='Shocker'; spawnEntity('Shocker') end})
  githubTab:CreateButton({Name='Spawn Mad Rush (400% / Red / Lethal / One Pass)',Callback=function() selected='Mad Rush'; spawnEntity('Mad Rush') end})
+ githubTab:CreateButton({Name='Spawn Rebound (Asset 12681048278)',Callback=function() selected='Rebound'; spawnEntity('Rebound') end})
  githubTab:CreateButton({Name='Spawn Rush (Custom Model)',Callback=function() selected='Rush'; spawnEntity('Rush') end})
  githubTab:CreateButton({Name='Spawn Ambush (Cannot Kill)',Callback=function() selected='Ambush'; spawnEntity('Ambush') end})
  githubTab:CreateButton({Name='Spawn A-60 (Original)',Callback=function() selected='A-60'; spawnEntity('A-60') end})
- editorTab:CreateParagraph({Title='All Entities Editor V3',Content='Select an entity, change its properties, SAVE, then SPAWN. Uses Vynixu V2 for real model assets. If an asset cannot load, an error is reported rather than pretending the entity spawned. Changes last for this session.'})
+ githubTab:CreateButton({Name='Spawn A-60 Hardcore (Asset 15455640886)',Callback=function() selected='A-60 Hardcore'; spawnEntity('A-60 Hardcore') end})
+ githubTab:CreateButton({Name='Spawn A-60 Hardcore New (GitHub Model)',Callback=function() selected='A-60 Hardcore New'; spawnEntity('A-60 Hardcore New') end})
+ githubTab:CreateButton({Name='Spawn A-400 (Room Stayer / Asset 124722644567174)',Callback=function() selected='A-400'; spawnEntity('A-400') end})
+ githubTab:CreateButton({Name='Spawn A-200 The Scribble (Reverse Rush Path / Asset 101342823585245)',Callback=function() selected='A-200 (The Scribble)'; spawnEntity('A-200 (The Scribble)') end})
+ githubTab:CreateButton({Name='Spawn Seek (Chases for 5 Doors / Editable Model)',Callback=function() selected='Seek (5 Doors)'; spawnEntity('Seek (5 Doors)') end})
+ editorTab:CreateParagraph({Title='GitHub Entity Editor',Content='Select any GitHub entity and use SPAWN SELECTED GITHUB ENTITY (WITH EDITOR SETTINGS). Each preset runs through its own original GitHub spawner and configuration. SAVE stores your editor profile for this session.'})
  local choices={}
  for name in pairs(registry) do table.insert(choices,name) end
  for name in pairs(specialEntities) do if not registry[name] then table.insert(choices,name) end end
  table.sort(choices)
  for i=1,50 do table.insert(choices,('A-60 Variant %02d'):format(i)) end
  for i=1,100 do table.insert(choices,('Rush Variant %03d'):format(i)) end
+ table.insert(choices,'Custom Entity')
  local chosen=choices[1]
  local function variantIndex(name) return tonumber(tostring(name):match('^A%-60 Variant (%d+)$')) end
  local function rushIndex(name) return tonumber(tostring(name):match('^Rush Variant (%d+)$')) end
@@ -3206,7 +4049,52 @@ local function tryRayfield()
   local idx=variantIndex(name)
   local ri=rushIndex(name)
   local base=registry[name]
-  return {Name=name,AssetId=idx and ORIGINAL_A60_MODEL or (ri and 'https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/Rush.txt?raw=true' or (name=='A-60' and ORIGINAL_A60_MODEL or (name=='Matcher' and 'rbxassetid://12705324154' or ''))),Image='',Speed=idx and A60_VARIANT_SPEEDS[idx] or (ri and (80+ri*12) or (base and base.speed or 100)),Rebounds=idx and (1+((idx-1)%5)) or (ri and ((ri-1)%6) or (name=='Matcher' and 0 or 0)),Reversed=false,Damage=false,DamageAmount=100,DamageRange=15,Delay=0,HeightOffset=0,Flicker=false,FlickerDuration=3,Break=false,Repair=false,Earthquake=false,CamShake=false,ShakeRange=100,ShakeFormat='1.5, 20, 0.1, 1',ReboundDelay=2,ReboundType='Ambush',Crucifixion=false,CruciType='Guiding',CruciRange=15,CruciResist=false,CruciBreak=false,LightEnabled=true,LightR=255,LightG=0,LightB=0,LightBrightness=3,LightRange=22}
+  local hardcoreCurrent=(name=='A-60 Hardcore')
+  local hardcoreNew=(name=='A-60 Hardcore New')
+  local reboundAsset=(name=='Rebound')
+  local deerGod=(name=='The Deer God')
+  local crasher=(name=='Crasher')
+  local trollFace=(name=='TrollFace')
+  local a400=(name=='A-400')
+  local a200=(name=='A-200 (The Scribble)')
+  local seekFive=(name=='Seek (5 Doors)')
+  local asset=(seekFive and 'DOORS_GAME_SEEK_MODEL') or (a400 and '124722644567174') or (a200 and '101342823585245') or (hardcoreCurrent and '15455640886') or (reboundAsset and '12681048278') or (deerGod and '11393625763') or (crasher and 'https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/RipperClassic.txt?raw=true') or (trollFace and 'https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/TrollFaceYEYEYE.txt?raw=true') or (hardcoreNew and 'https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/A-60Hardcore%20New.txt?raw=true') or (idx and ORIGINAL_A60_MODEL) or (ri and 'https://github.com/fernandesdasilvamariainez-coder/Roblox-Doors-Custom-Entities/blob/main/Rush.txt?raw=true') or (name=='A-60' and ORIGINAL_A60_MODEL) or ''
+  local defaultSpeed=100
+  if idx then defaultSpeed=A60_VARIANT_SPEEDS[idx]
+  elseif ri then defaultSpeed=80+ri*12
+  elseif deerGod then defaultSpeed=25
+  elseif crasher or trollFace then defaultSpeed=250
+  elseif a400 then defaultSpeed=0
+  elseif a200 then defaultSpeed=200
+  elseif seekFive then defaultSpeed=24
+  elseif hardcoreCurrent then defaultSpeed=350
+  elseif hardcoreNew then defaultSpeed=450
+  elseif base then defaultSpeed=base.speed end
+  local defaultRebounds=0
+  if deerGod then defaultRebounds=1
+  elseif crasher or hardcoreNew or reboundAsset then defaultRebounds=2
+  elseif hardcoreCurrent then defaultRebounds=1
+  elseif trollFace then defaultRebounds=1
+  elseif idx then defaultRebounds=1+((idx-1)%5)
+  elseif ri then defaultRebounds=(ri-1)%6 end
+  local defaultDamageRange=15
+  if deerGod then defaultDamageRange=10 elseif crasher then defaultDamageRange=10 elseif trollFace then defaultDamageRange=40 elseif hardcoreNew then defaultDamageRange=120 end
+  local defaultDelay=0
+  if crasher then defaultDelay=0.5 elseif trollFace then defaultDelay=2 elseif hardcoreNew then defaultDelay=5 elseif hardcoreCurrent then defaultDelay=3 end
+  local defaultShakeRange=100
+  if deerGod then defaultShakeRange=10 elseif trollFace or hardcoreNew then defaultShakeRange=90 elseif hardcoreCurrent then defaultShakeRange=50 end
+  local defaultShakeFormat='1.5, 20, 0.1, 1'
+  if deerGod then defaultShakeFormat='5, 15, 0.1, 1' elseif crasher then defaultShakeFormat='5, 50, 0.1, 1' elseif trollFace then defaultShakeFormat='3.5, 30, 0.1, 1' elseif hardcoreNew then defaultShakeFormat='20, 30, 0.1, 1' elseif hardcoreCurrent then defaultShakeFormat='30, 30, 0.1, 1' end
+  return {
+   Name=name,AssetId=asset,Image='',Speed=defaultSpeed,Rebounds=defaultRebounds,Reversed=a200,
+   Damage=deerGod or crasher or trollFace,DamageAmount=100,DamageRange=defaultDamageRange,Delay=defaultDelay,
+   HeightOffset=(hardcoreNew or hardcoreCurrent) and 0.5 or (crasher and 1 or 0),Flicker=deerGod or crasher,
+   FlickerDuration=deerGod and 80 or (trollFace and 50 or 3),Break=deerGod or crasher,Repair=false,Earthquake=false,
+   CamShake=deerGod or crasher or trollFace or hardcoreNew or hardcoreCurrent,ShakeRange=defaultShakeRange,ShakeFormat=defaultShakeFormat,
+   ReboundDelay=deerGod and 0.1 or (crasher and 0 or 2),ReboundType='Ambush',
+   Crucifixion=false,CruciType='Guiding',CruciRange=15,CruciResist=false,CruciBreak=false,
+   LightEnabled=true,LightR=255,LightG=0,LightB=0,LightBrightness=3,LightRange=22
+  }
  end
  _G.DOORS_FullEditorOverrides=_G.DOORS_FullEditorOverrides or {}
  local editorProfiles=_G.DOORS_FullEditorOverrides
@@ -3223,12 +4111,17 @@ local function tryRayfield()
   end})
  end
  local function toggle(label,key)
-  editorTab:CreateToggle({Name=label,CurrentValue=false,Callback=function(v) edited[key]=v end})
+  editorTab:CreateToggle({Name=label,CurrentValue=edited[key]==true,Callback=function(v) edited[key]=v end})
  end
  editorTab:CreateDropdown({Name='Select Entity',Options=choices,CurrentOption={chosen},MultipleOptions=false,Callback=function(v)
   chosen=type(v)=='table' and v[1] or v
   edited=loadEditor(chosen)
   print('[Entity Editor] Loaded '..chosen..'. Input fields override saved values; toggle changes apply when touched.')
+ end})
+ editorTab:CreateButton({Name='NEW / RESET CUSTOM ENTITY PROFILE',Callback=function()
+  chosen='Custom Entity'
+  edited=loadEditor(chosen)
+  print('[Entity Editor] Custom profile selected. Set its name, model URL, and behavior, then save or spawn it.')
  end})
  editorTab:CreateSection('Identity and Model')
  editorTab:CreateInput({Name='Custom Entity Name',PlaceholderText='Leave blank to keep original',RemoveTextAfterFocusLost=false,Callback=function(v) if v~='' then edited.Name=v end end})
@@ -3273,48 +4166,74 @@ local function tryRayfield()
   copy.DamageAmount=math.clamp(tonumber(copy.DamageAmount) or 0,0,100)
   editorProfiles[chosen]=copy
   local idx=variantIndex(chosen)
-  if idx then a60Edits[idx]={Speed=copy.Speed,Rebounds=copy.Rebounds,Reversed=copy.Reversed} end
-  if registry[chosen] then allEntityEdits[chosen]={Speed=copy.Speed,Rebounds=copy.Rebounds,Reversed=copy.Reversed} end
-  print('[Entity Editor] Saved '..chosen..' (session only)')
+  if idx then a60Edits[idx]={Speed=copy.Speed,Rebounds=copy.Rebounds,Reversed=copy.Reversed,Damage=copy.Damage,DamageRange=copy.DamageRange,ReboundDelay=copy.ReboundDelay} end
+  allEntityEdits[chosen]=creatorCopy(copy)
+  print('[GitHub Entity Editor] Saved profile for '..chosen..' (session only)')
   return copy
  end
  editorTab:CreateButton({Name='SAVE EDITED ENTITY',Callback=saveEditor})
- editorTab:CreateButton({Name='SPAWN EDITED ENTITY (V2)',Callback=function()
+ -- Morph, revert, invisibility, and player movement controls removed.
+ editorTab:CreateButton({Name='SPAWN SELECTED GITHUB ENTITY (WITH EDITOR SETTINGS)',Callback=function()
+  -- Every GitHub preset has its own loader/configuration. Dispatch to that
+  -- original spawn function instead of forcing every model through Rush.
   local cfg=saveEditor()
+  _G.DOORS_EDITOR_ACTIVE_NAME=chosen
+  _G.DOORS_EDITOR_ACTIVE_PROFILE=cfg
   task.spawn(function()
-   local ok,err=pcall(function()
-    local asset=tostring(cfg.AssetId or '')
-    if asset=='' then error('No model asset for '..chosen..'. Enter a valid model asset ID or RBXM URL.') end
-    if asset:match('^%d+$') then asset='rbxassetid://'..asset end
-    local spawner=loadstring(game:HttpGet('https://raw.githubusercontent.com/RegularVynixu/DOORS-Entity-Spawner-V2/main/init.luau'))()
-    if type(spawner)~='table' or type(spawner.Create)~='function' then error('V2 spawner unavailable') end
-    local rebounds=math.max(0,math.floor(cfg.Rebounds or 0))
-    local e=spawner:Create({
-     Entity={Name=cfg.Name,Asset=asset,HeightOffset=cfg.HeightOffset},
-     Lights={Flicker={Enabled=cfg.Flicker,Duration=cfg.FlickerDuration},Shatter=cfg.Break,Repair=cfg.Repair},
-     Earthquake={Enabled=cfg.Earthquake},CameraShake={Enabled=cfg.CamShake,Range=cfg.ShakeRange,Values=creatorShake(cfg.ShakeFormat)},
-     Movement={Speed=cfg.Speed,Delay=cfg.Delay,Reversed=cfg.Reversed},
-     Rebounding={Enabled=rebounds>0,Type=cfg.ReboundType,Min=math.max(1,rebounds),Max=math.max(1,rebounds),Delay=cfg.ReboundDelay},
-     Damage={Enabled=cfg.Damage,IgnoreHiding=false,Range=cfg.DamageRange,Amount=cfg.DamageAmount},
-     Crucifixion={Enabled=cfg.Crucifixion,Type=cfg.CruciType,Range=cfg.CruciRange,Resist=cfg.CruciResist,Break=cfg.CruciBreak},
-     Death={Type='Guiding',Hints={'You died to '..cfg.Name..'.'},Cause=cfg.Name}
-    })
-    if not e then error('Spawner Create returned nil') end
-    e:Run(true)
-    print('[Entity Editor] Spawn requested: '..cfg.Name)
+   local ok,result=pcall(function()
+    local a60Id=variantIndex(chosen)
+    local rushId=rushIndex(chosen)
+    if chosen=='Custom Entity' then
+     local custom=loadEditor(chosen)
+     local asset=tostring(custom.AssetId or '')
+     if asset:match('^%d+$') then asset='rbxassetid://'..asset end
+     if asset=='' then error('Enter a Roblox asset ID or a direct RBXM model URL first') end
+     local loader=loadstring(game:HttpGet('https://raw.githubusercontent.com/RegularVynixu/DOORS-Entity-Spawner-V2/main/init.luau'))()
+     if type(loader)~='table' or type(loader.Create)~='function' then error('DOORS Entity Spawner V2 failed to load') end
+     local minimum=math.max(1,math.floor(tonumber(custom.Rebounds) or 1))
+     local customEntity=loader:Create({
+      Entity={Name=(custom.Name and custom.Name~='' and custom.Name or 'Custom Entity'),Asset=asset,HeightOffset=custom.HeightOffset},
+      Lights={Flicker={Enabled=custom.Flicker,Duration=custom.FlickerDuration},Shatter=custom.Break,Repair=custom.Repair},
+      Earthquake={Enabled=custom.Earthquake},
+      CameraShake={Enabled=custom.CamShake,Range=custom.ShakeRange,Values=creatorShake(custom.ShakeFormat)},
+      Movement={Speed=custom.Speed,Delay=custom.Delay,Reversed=custom.Reversed},
+      Rebounding={Enabled=minimum>1,Type=custom.ReboundType,Min=minimum,Max=minimum,Delay=custom.ReboundDelay},
+      Damage={Enabled=custom.Damage,IgnoreHiding=false,Range=custom.DamageRange,Amount=custom.DamageAmount},
+      Crucifixion={Enabled=custom.Crucifixion,Type=custom.CruciType,Range=custom.CruciRange,Resist=custom.CruciResist,Break=custom.CruciBreak},
+      Death={Type='Guiding',Hints={'You died to '..tostring(custom.Name or 'a custom entity')..'.','It was created in the Entity Editor.','Hide next time.','Good luck.'},Cause=custom.Name}
+     })
+     if not customEntity then error('Custom entity creation failed; check the model asset and URL permissions') end
+     customEntity:Run(true)
+    elseif a60Id then
+     spawnA60Variant(a60Id)
+    elseif rushId then
+     local cfg=loadEditor(chosen)
+     local source=loadstring(game:HttpGet('https://raw.githubusercontent.com/fernandesdasilvamariainez-coder/Aaaaaaa/refs/heads/main/Old%20Vynixu%20Entity%20Spawner'))()
+     if type(source)~='table' or type(source.createEntity)~='function' or type(source.runEntity)~='function' then error('Old Vynixu spawner unavailable for '..chosen) end
+     local count=math.max(1,math.floor(tonumber(cfg.Rebounds) or 1))
+     local entity=source.createEntity({CustomName=cfg.Name,Model=cfg.AssetId,Speed=cfg.Speed,DelayTime=cfg.Delay,HeightOffset=cfg.HeightOffset,CanKill=cfg.Damage,KillRange=cfg.DamageRange,BackwardsMovement=cfg.Reversed,BreakLights=cfg.Break,FlickerLights={cfg.Flicker,cfg.FlickerDuration},Cycles={Min=count,Max=count,WaitTime=cfg.ReboundDelay},CamShake={cfg.CamShake,creatorShake(cfg.ShakeFormat),cfg.ShakeRange},Jumpscare={false,{}},CustomDialog={'You died to '..tostring(cfg.Name)}})
+     if not entity then error('Could not create '..chosen..'; verify its GitHub model URL') end
+     source.runEntity(entity)
+    else
+     local spawned=spawnEntity(chosen)
+     local known=registry[chosen] or specialEntities[chosen]
+     if not known then error('No GitHub spawn handler is registered for '..tostring(chosen)) end
+    end
+    print('[GitHub Entity Editor] Spawn requested: '..tostring(chosen))
    end)
-   if not ok then warn('[Entity Editor] Spawn FAILED: '..tostring(err)) end
+   if not ok then warn('[GitHub Entity Editor] '..tostring(result)) end
   end)
  end})
- editorTab:CreateParagraph({Title='Image and Light Compatibility',Content='Model Asset changes the spawned V2 model. Image/Decal and custom RGB light are stored for your entity profile but are not guaranteed to apply to external V2 models. V2 spawning requires a compatible DOORS game and a loadable model; no sphere fallback.'})
+ editorTab:CreateParagraph({Title='GitHub Entity Compatibility',Content='The editor dispatches listed GitHub presets to their own original spawn function and loader. To make your own entity, press NEW / RESET CUSTOM ENTITY PROFILE, enter a name and Roblox asset ID or direct RBXM URL, adjust its settings, then SAVE or SPAWN. Custom entities use the DOORS Entity Spawner V2 backend and support its model, movement, lights, rebound, damage, camera shake, earthquake, and crucifix settings. The Deer God uses its Old Vynixu backend and applies the supported editor overrides for speed, delay, height, damage, damage range, rebounds, lights, and camera shake. Existing GitHub presets keep their own handlers; some custom scripted entities may not expose every editor setting.'})
  editorTab:CreateButton({Name='RESET SELECTED ENTITY',Callback=function()
   editorProfiles[chosen]=nil
+  if _G.DOORS_EDITOR_ACTIVE_NAME==chosen then _G.DOORS_EDITOR_ACTIVE_PROFILE=nil; _G.DOORS_EDITOR_ACTIVE_NAME=nil end
   local idx=variantIndex(chosen)
   if idx then a60Edits[idx]=nil else allEntityEdits[chosen]=nil end
   edited=defaultsFor(chosen)
-  print('[Entity Editor] Reset '..chosen..'; reselect or reopen UI to refresh input display')
+  print('[GitHub Entity Editor] Reset profile for '..chosen..'; the next spawn uses the original GitHub preset')
  end})
- githubTab:CreateSection('Rush â 100 Editable Variants')
+ githubTab:CreateSection('Rush Ã¢ÂÂ 100 Editable Variants')
  for rushVariantIndex=1,100 do
   local n=rushVariantIndex
   local variantName=('Rush Variant %03d'):format(n)
@@ -3334,7 +4253,7 @@ local function tryRayfield()
    end)
   end})
  end
- githubTab:CreateSection('A-60 â 50 Original-Model Variants')
+ githubTab:CreateSection('A-60 Ã¢ÂÂ 50 Original-Model Variants')
  for a60VariantIndex=1,50 do
   local variantId=a60VariantIndex
   local variantSpeed=A60_VARIANT_SPEEDS[variantId]
@@ -3349,41 +4268,18 @@ local function tryRayfield()
  githubTab:CreateButton({Name='Spawn Mad Ambush Child (Rush Face / Red + Blue Particles)',Callback=function() selected='Mad Ambush Child (Rush)'; spawnEntity('Mad Ambush Child (Rush)') end})
  githubTab:CreateButton({Name='Spawn Charged Terror (2000% / Lethal)',Callback=function() selected='Charged Terror'; spawnEntity('Charged Terror') end})
  githubTab:CreateButton({Name='Spawn A-60 Troll (200% / Lethal)',Callback=function() selected='A-60 Troll'; spawnEntity('A-60 Troll') end})
- githubTab:CreateButton({Name='Spawn Ripper Classic (Standard / 250 Speed / 2-6 Cycles)',Callback=function() selected='Ripper'; spawnEntity('Ripper') end})
+ githubTab:CreateButton({Name='Spawn Ripper (Red Lights / Lethal)',Callback=function() selected='Ripper'; spawnEntity('Ripper') end})
  githubTab:CreateButton({Name='Spawn Cease (FREEZE / No Movement)',Callback=function() selected='Cease'; spawnEntity('Cease') end})
  githubTab:CreateButton({Name='Spawn Frostbite (Cold / Lighter Only)',Callback=function() selected='Frostbite'; spawnEntity('Frostbite') end})
  githubTab:CreateButton({Name='Spawn Greed (400% / Lethal)',Callback=function() selected='Greed'; spawnEntity('Greed') end})
  githubTab:CreateButton({Name='Spawn A-60 Hardcore Old (Changing Faces / Nonlethal)',Callback=function() selected='A-60 Hardcore Old'; spawnEntity('A-60 Hardcore Old') end})
+ githubTab:CreateButton({Name='Spawn The Deer God (25 Speed / Earthquake / Lethal)',Callback=function() selected='The Deer God'; spawnEntity('The Deer God') end})
  githubTab:CreateButton({Name='Spawn Malware (300% / Ambush Imitator / Lethal)',Callback=function() selected='Malware'; spawnEntity('Malware') end})
  githubTab:CreateButton({Name='Spawn Rebound Hardcore Old (Classic / 2s per room)',Callback=function() selected='Rebound Hardcore Old'; spawnEntity('Rebound Hardcore Old') end})
  githubTab:CreateButton({Name='Spawn Rebound Hardcore Old RED (Classic / Red Variant)',Callback=function() selected='Rebound Hardcore Old RED'; spawnEntity('Rebound Hardcore Old RED') end})
  githubTab:CreateButton({Name='Spawn Mad Ambush',Callback=function() selected='Mad Ambush'; spawnEntity('Mad Ambush') end})
- githubTab:CreateButton({Name='Spawn Matcher (Hungry / One Pass)',Callback=function()
-  selected='Matcher'
-  local cfg=loadEditor('Matcher')
-  task.spawn(function()
-   local ok,err=pcall(function()
-    local spawner=loadstring(game:HttpGet('https://raw.githubusercontent.com/RegularVynixu/DOORS-Entity-Spawner-V2/main/init.luau'))()
-    if type(spawner)~='table' or type(spawner.Create)~='function' then error('V2 spawner unavailable') end
-    local e=spawner:Create({
-     Entity={Name=cfg.Name,Asset='rbxassetid://12705324154',HeightOffset=cfg.HeightOffset},
-     Lights={Flicker={Enabled=cfg.Flicker,Duration=cfg.FlickerDuration},Shatter=cfg.Break,Repair=cfg.Repair},
-     Earthquake={Enabled=cfg.Earthquake},CameraShake={Enabled=cfg.CamShake,Range=cfg.ShakeRange,Values=creatorShake(cfg.ShakeFormat)},
-     Movement={Speed=cfg.Speed,Delay=cfg.Delay,Reversed=cfg.Reversed},
-     Rebounding={Enabled=false,Type=cfg.ReboundType,Min=1,Max=1,Delay=cfg.ReboundDelay},
-     Damage={Enabled=cfg.Damage,IgnoreHiding=false,Range=cfg.DamageRange,Amount=cfg.DamageAmount},
-     Crucifixion={Enabled=cfg.Crucifixion,Type=cfg.CruciType,Range=cfg.CruciRange,Resist=cfg.CruciResist,Break=cfg.CruciBreak},
-     Death={Type='Guiding',Hints={'Matcher was hungry.'},Cause='Matcher'}
-    })
-    if not e then error('V2 spawner Create returned nil') end
-    e:Run(true)
-    print('[Matcher] Spawn requested; one pass, asset 12705324154')
-   end)
-   if not ok then warn('[Matcher] Spawn failed: '..tostring(err)) end
-  end)
- end})
  return true
 end
 local ok,worked=pcall(tryRayfield)
 if not ok then warn('[Entity Creator] Rayfield failed: '..tostring(worked)) end
-if ok and not worked then warn('[Entity Creator] Rayfield unavailable; no tabs were created') end
+if ok and not worked then warn('[Entity Creator] UI initialization did not complete') end
